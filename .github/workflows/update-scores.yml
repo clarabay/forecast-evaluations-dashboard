@@ -1,0 +1,74 @@
+name: Update precomputed scores
+
+# Scores live in precomputed/ and go stale as hubs publish new forecast dates.
+# Rebuilding here rather than in the app: the deployed container has an ephemeral
+# filesystem and ~1 GB of memory, and cannot commit its results anywhere.
+on:
+  schedule:
+    # Thursdays 07:00 UTC — after the Wednesday forecast submissions land.
+    - cron: "0 7 * * 4"
+  workflow_dispatch:      # also runnable on demand from the Actions tab
+
+permissions:
+  contents: write         # needed to commit the regenerated parquet files
+
+concurrency:
+  group: update-scores
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Forecast CSVs are cached to ~/.flusight_cache as parquet. Restoring it
+      # turns most of the run into local reads instead of thousands of downloads.
+      # The key rotates weekly so the cache keeps growing rather than going stale.
+      - name: Restore forecast cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.flusight_cache
+          key: flusight-cache-${{ github.run_id }}
+          restore-keys: |
+            flusight-cache-
+
+      - name: Rebuild scores
+        env:
+          # Lifts the API rate limit from 60/hour to 1000/hour for this repo.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python scripts/build_scores.py
+
+      - name: Commit if changed
+        run: |
+          if git diff --quiet -- precomputed/; then
+            echo "No score changes — nothing to commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add precomputed/
+          git commit -m "Update precomputed scores ($(date -u +%Y-%m-%d))"
+          git push
+          echo "Pushed updated scores."
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Precomputed score files"
+            echo ""
+            echo '```'
+            ls -la precomputed/ 2>/dev/null || echo "precomputed/ missing"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
