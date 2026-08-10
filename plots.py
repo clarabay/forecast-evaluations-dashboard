@@ -244,14 +244,14 @@ def build_observed_chart(
 ) -> go.Figure:
     """Observed data only — no forecasts."""
     fig = go.Figure()
-    obs_start = max(pd.Timestamp.now() - pd.Timedelta(weeks=obs_weeks), pd.Timestamp("2022-10-01"))
-    obs_loc = (
-        observed[
-            (observed["location"] == location) &
-            (observed["date"] >= obs_start)
-        ]
-        .sort_values("date")
-    )
+    # Window back from the most recent observation rather than from today, so the
+    # view always lands on the latest available data. Anchoring to today meant a
+    # target whose reporting lags — flu and metrocast both trail by over a month
+    # out of season — rendered an empty chart on the shorter windows.
+    obs_all = observed[observed["location"] == location]
+    anchor  = obs_all["date"].max() if not obs_all.empty else pd.Timestamp.now()
+    obs_start = max(anchor - pd.Timedelta(weeks=obs_weeks), pd.Timestamp("2022-10-01"))
+    obs_loc = obs_all[obs_all["date"] >= obs_start].sort_values("date")
     if not obs_loc.empty:
         fig.add_trace(go.Scatter(
             x=obs_loc["date"], y=obs_loc["value"],
@@ -293,7 +293,11 @@ def build_all_states_observed(
 
     ncols = 6
     nrows = math.ceil(len(locs) / ncols)
-    obs_start = max(pd.Timestamp.now() - pd.Timedelta(weeks=obs_weeks), pd.Timestamp("2022-10-01"))
+    # Anchored to the latest observation, as in build_observed_chart. Deliberately
+    # a single global anchor rather than per-panel, so every small multiple shares
+    # the same x window and stays comparable.
+    anchor = observed["date"].max() if not observed.empty else pd.Timestamp.now()
+    obs_start = max(anchor - pd.Timedelta(weeks=obs_weeks), pd.Timestamp("2022-10-01"))
 
     fig = make_subplots(
         rows=nrows, cols=ncols,
