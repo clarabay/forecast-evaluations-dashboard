@@ -1,0 +1,13 @@
+streamlit>=1.35.0
+# Pinned below 2.0: the dashboard has only ever been run against pandas 1.5.3.
+# No pandas 2.x removals appear in the code, so this is expected to lift cleanly
+# once someone actually exercises the app on 2.x.
+pandas>=1.5,<2.0
+# numpy 1.x has no wheels above Python 3.12 — set the Python version explicitly
+# when deploying rather than letting the host pick a newer default.
+numpy<2
+pyarrow>=14.0
+plotly>=5.20
+requests>=2.31
+sodapy>=2.1.0
+epiweeks>=2.1
