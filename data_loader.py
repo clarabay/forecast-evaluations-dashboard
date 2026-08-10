@@ -26,6 +26,10 @@ import streamlit as st
 DISK_CACHE_DIR = Path.home() / ".flusight_cache"
 MAX_WORKERS    = 8
 
+# Scores precomputed by scripts/build_scores.py and committed to the repo, so the
+# app never has to hold a season of raw forecasts in memory to score them.
+PRECOMPUTED_DIR = Path(__file__).resolve().parent / "precomputed"
+
 _FLUSIGHT_RAW = "https://raw.githubusercontent.com/cdcepi/FluSight-forecast-hub/main"
 _FLUSIGHT_API = "https://api.github.com/repos/cdcepi/FluSight-forecast-hub/contents"
 
@@ -365,6 +369,88 @@ def _model_output_index(hub_label: str) -> Optional[dict[str, list[str]]]:
         return None
     return {model: sorted(dates) for model, dates in index.items()}
 
+
+# ── Precomputed scores ─────────────────────────────────────────────────────────
+
+def _precomputed_path(hub_label: str, kind: str) -> Path:
+    return PRECOMPUTED_DIR / f"{HUB_CONFIGS[hub_label].cache_dir}_{kind}.parquet"
+
+
+@st.cache_resource(show_spinner=False)
+def load_precomputed(hub_label: str, kind: str) -> pd.DataFrame:
+    """
+    Read a precomputed score table ('wis' or 'coverage'), or an empty frame.
+
+    Empty means the caller should fall back to scoring at request time — that
+    path still works, it is just far more expensive.
+
+    cache_resource rather than cache_data on purpose. cache_data serializes what
+    it stores, which for these tables costs more memory than the tables
+    themselves; cache_resource holds the object directly and shares one copy
+    across sessions instead of one per user.
+
+    The returned frame is shared, so treat it as read-only — filter_scores
+    returns a copy whenever it actually filters, which every caller does.
+    """
+    path = _precomputed_path(hub_label, kind)
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        df = pd.read_parquet(path)
+    except Exception as e:
+        st.warning(f"Could not read precomputed {kind} scores: {e}")
+        return pd.DataFrame()
+
+    if "reference_date" in df.columns:
+        df["reference_date"] = pd.to_datetime(df["reference_date"])
+    if "target_end_date" in df.columns:
+        df["target_end_date"] = pd.to_datetime(df["target_end_date"])
+
+    # scripts/build_scores.py already writes compact dtypes, so this is a no-op
+    # for freshly built files and only fixes up older ones. Each branch checks
+    # the dtype first: casting an already-categorical column via astype(str)
+    # materialises a Python string per row, which on ~2M rows costs hundreds of
+    # megabytes — more than the tables themselves.
+    for col in ("model", "location", "target"):
+        if col in df.columns and not isinstance(df[col].dtype, pd.CategoricalDtype):
+            df[col] = df[col].astype(str).astype("category")
+    if "horizon" in df.columns and df["horizon"].dtype != "int16":
+        df["horizon"] = pd.to_numeric(df["horizon"], errors="coerce").astype("int16")
+    # Coverage indicators only — see the note in scripts/build_scores.compact.
+    for col in df.columns:
+        if col.endswith("_cov") and df[col].dtype == "float64":
+            df[col] = df[col].astype("float32")
+    return df
+
+
+def filter_scores(
+    scores: pd.DataFrame,
+    ref_dates: list[str],
+    location: Optional[str] = None,
+    models: Optional[list[str]] = None,
+) -> pd.DataFrame:
+    """Slice a precomputed table to the selection the user is looking at."""
+    if scores.empty:
+        return scores
+
+    out = scores
+    filtered = False
+    if ref_dates:
+        wanted = pd.to_datetime(pd.Series(list(ref_dates))).unique()
+        out = out[out["reference_date"].isin(wanted)]
+        filtered = True
+    if location is not None:
+        out = out[out["location"] == location]
+        filtered = True
+    if models is not None:
+        out = out[out["model"].isin(set(models))]
+        filtered = True
+    # Only copy when this is a view over a subset; copying the whole table when
+    # nothing was filtered would double peak memory for no reason.
+    return out.copy() if filtered else out
+
+
+# ── Model / date discovery ─────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_model_list(hub_label: str = "Flu Hospitalizations") -> list[str]:

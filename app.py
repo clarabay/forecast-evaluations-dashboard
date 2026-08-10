@@ -14,10 +14,12 @@ from data_loader import (
     HUB_CONFIGS,
     HUB_LABELS,
     check_github_rate_limit,
+    filter_scores,
     get_all_available_dates,
     get_model_list,
     load_forecasts_for_selection,
     load_locations,
+    load_precomputed,
     load_truth_data,
 )
 from scoring import compute_coverage, compute_wis
@@ -433,31 +435,44 @@ Target: `{hub.target}`
         if not eval_ref_dates:
             st.info("No forecast dates in the selected evaluation range.")
         else:
-            wis_load_models = sorted(set(all_models) | {hub.baseline})
-            wis_cache_key = (selected_hub_label, tuple(wis_load_models), tuple(eval_ref_dates), wis_location)
+            # Precomputed scores turn this into a filter. Scoring at request time
+            # means fetching every model's forecasts for the whole range and
+            # pivoting them in one DataFrame, which needs gigabytes for a full
+            # season and is what used to exhaust the memory limit when deployed.
+            precomputed_wis = load_precomputed(selected_hub_label, "wis")
 
-            if st.session_state.get(f"_wis_cache_key_{selected_hub_label}") != wis_cache_key:
-                prog2 = st.empty()
-                with st.spinner(""):
-                    fc_wis_raw = load_forecasts_for_selection(
-                        hub_label=selected_hub_label,
-                        models=wis_load_models,
-                        ref_dates=eval_ref_dates,
-                        progress_placeholder=prog2,
-                    )
-                if not fc_wis_raw.empty:
-                    fc_wis = fc_wis_raw.copy()
-                    fc_wis["horizon"] = fc_wis["horizon"].astype(int)
-                    if not wis_all_locs:
-                        fc_wis = fc_wis[fc_wis["location"] == wis_location]
-                    with st.spinner("Computing WIS scores…"):
-                        wis_results = compute_wis(fc_wis, truth_df, baseline_model=hub.baseline)
-                    st.session_state[f"_wis_results_{selected_hub_label}"] = wis_results
-                else:
-                    st.session_state[f"_wis_results_{selected_hub_label}"] = pd.DataFrame()
-                st.session_state[f"_wis_cache_key_{selected_hub_label}"] = wis_cache_key
+            if not precomputed_wis.empty:
+                wis_results = filter_scores(
+                    precomputed_wis,
+                    ref_dates=eval_ref_dates,
+                    location=wis_location,
+                )
+            else:
+                wis_load_models = sorted(set(all_models) | {hub.baseline})
+                wis_cache_key = (selected_hub_label, tuple(wis_load_models), tuple(eval_ref_dates), wis_location)
 
-            wis_results = st.session_state.get(f"_wis_results_{selected_hub_label}", pd.DataFrame())
+                if st.session_state.get(f"_wis_cache_key_{selected_hub_label}") != wis_cache_key:
+                    prog2 = st.empty()
+                    with st.spinner(""):
+                        fc_wis_raw = load_forecasts_for_selection(
+                            hub_label=selected_hub_label,
+                            models=wis_load_models,
+                            ref_dates=eval_ref_dates,
+                            progress_placeholder=prog2,
+                        )
+                    if not fc_wis_raw.empty:
+                        fc_wis = fc_wis_raw.copy()
+                        fc_wis["horizon"] = fc_wis["horizon"].astype(int)
+                        if not wis_all_locs:
+                            fc_wis = fc_wis[fc_wis["location"] == wis_location]
+                        with st.spinner("Computing WIS scores…"):
+                            wis_results = compute_wis(fc_wis, truth_df, baseline_model=hub.baseline)
+                        st.session_state[f"_wis_results_{selected_hub_label}"] = wis_results
+                    else:
+                        st.session_state[f"_wis_results_{selected_hub_label}"] = pd.DataFrame()
+                    st.session_state[f"_wis_cache_key_{selected_hub_label}"] = wis_cache_key
+
+                wis_results = st.session_state.get(f"_wis_results_{selected_hub_label}", pd.DataFrame())
 
             if wis_results.empty:
                 st.warning("No forecast data or no overlapping observations for the evaluation range.")
@@ -559,31 +574,41 @@ Models are sorted by median WIS ratio (best at top). Highlighted models are show
         if not cov_eval_ref_dates:
             st.info("No forecast dates in the selected evaluation range.")
         else:
-            prog3 = st.empty()
-            with st.spinner(""):
-                fc_cov_raw = load_forecasts_for_selection(
-                    hub_label=selected_hub_label,
-                    models=cov_models,
+            precomputed_cov = load_precomputed(selected_hub_label, "coverage")
+
+            if not precomputed_cov.empty:
+                cov_results = filter_scores(
+                    precomputed_cov,
                     ref_dates=cov_eval_ref_dates,
-                    progress_placeholder=prog3,
+                    location=cov_location,
+                    models=cov_models,
                 )
-
-            if fc_cov_raw.empty:
-                st.warning("No forecast data for the evaluation range.")
             else:
-                fc_cov = fc_cov_raw.copy()
-                fc_cov["horizon"] = fc_cov["horizon"].astype(int)
-                if not cov_all_locs:
-                    fc_cov = fc_cov[fc_cov["location"] == cov_location]
+                prog3 = st.empty()
+                with st.spinner(""):
+                    fc_cov_raw = load_forecasts_for_selection(
+                        hub_label=selected_hub_label,
+                        models=cov_models,
+                        ref_dates=cov_eval_ref_dates,
+                        progress_placeholder=prog3,
+                    )
 
-                with st.spinner("Computing coverage…"):
-                    cov_results = compute_coverage(fc_cov, truth_df)
-
-                if cov_results.empty:
-                    st.warning("Could not compute coverage — no overlapping forecasts and observations.")
+                if fc_cov_raw.empty:
+                    cov_results = pd.DataFrame()
                 else:
-                    cov_fig = build_coverage_calibration(cov_results, cov_models, by_horizon=cov_by_horizon)
-                    st.plotly_chart(cov_fig, use_container_width=False, config={"displayModeBar": False})
+                    fc_cov = fc_cov_raw.copy()
+                    fc_cov["horizon"] = fc_cov["horizon"].astype(int)
+                    if not cov_all_locs:
+                        fc_cov = fc_cov[fc_cov["location"] == cov_location]
+
+                    with st.spinner("Computing coverage…"):
+                        cov_results = compute_coverage(fc_cov, truth_df)
+
+            if cov_results.empty:
+                st.warning("Could not compute coverage — no overlapping forecasts and observations.")
+            else:
+                cov_fig = build_coverage_calibration(cov_results, cov_models, by_horizon=cov_by_horizon)
+                st.plotly_chart(cov_fig, use_container_width=False, config={"displayModeBar": False})
 
         with st.expander("About coverage calibration"):
             st.markdown("""

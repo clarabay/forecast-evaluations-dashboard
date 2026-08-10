@@ -59,14 +59,21 @@ def _pivot_wide(merged: pd.DataFrame) -> pd.DataFrame:
     return wide
 
 
-def compute_wis(
+_RATIO_KEYS = ["location", "horizon", "reference_date", "target_end_date"]
+
+
+def compute_wis_scores(
     forecasts: pd.DataFrame,
     truth: pd.DataFrame,
-    baseline_model: str = "FluSight-baseline",
 ) -> pd.DataFrame:
     """
-    Vectorized WIS and WIS ratio for every (model, location, horizon, reference_date, target_end_date).
-    Returns DataFrame with columns: model, location, horizon, reference_date, target_end_date, wis, wis_ratio.
+    Vectorized WIS for every (model, location, horizon, reference_date, target_end_date).
+
+    No baseline ratio, so this is safe to run on one model's file at a time —
+    which is how the precomputed score cache is built without holding every
+    model's forecasts in memory at once.
+
+    Returns DataFrame with columns: group keys + wis.
     """
     if forecasts.empty or truth.empty:
         return pd.DataFrame()
@@ -102,17 +109,43 @@ def compute_wis(
 
     wide["wis"] = wis / 11.5
 
-    df_wis = wide[_GROUP_KEYS + ["wis"]].copy()
+    return wide[_GROUP_KEYS + ["wis"]].copy()
 
-    # WIS ratio vs baseline
-    ratio_keys = ["location", "horizon", "reference_date", "target_end_date"]
-    baseline = df_wis[df_wis["model"] == baseline_model][ratio_keys + ["wis"]].rename(
+
+def add_wis_ratio(
+    scores: pd.DataFrame,
+    baseline_model: str = "FluSight-baseline",
+) -> pd.DataFrame:
+    """
+    Attach wis_baseline and wis_ratio to already-scored rows.
+
+    Separate from compute_wis_scores because the ratio is the only part that
+    needs more than one model: it is wis / wis_baseline over shared keys, so it
+    can be derived from the small scored table rather than from raw forecasts.
+    Rows with no matching baseline row are dropped, matching the original
+    inner-join behaviour.
+    """
+    if scores.empty:
+        return pd.DataFrame()
+
+    baseline = scores[scores["model"] == baseline_model][_RATIO_KEYS + ["wis"]].rename(
         columns={"wis": "wis_baseline"}
     )
-    df_ratio = df_wis.merge(baseline, on=ratio_keys, how="inner")
+    df_ratio = scores.merge(baseline, on=_RATIO_KEYS, how="inner")
     df_ratio["wis_ratio"] = df_ratio["wis"] / df_ratio["wis_baseline"]
-
     return df_ratio
+
+
+def compute_wis(
+    forecasts: pd.DataFrame,
+    truth: pd.DataFrame,
+    baseline_model: str = "FluSight-baseline",
+) -> pd.DataFrame:
+    """
+    Vectorized WIS and WIS ratio for every (model, location, horizon, reference_date, target_end_date).
+    Returns DataFrame with columns: model, location, horizon, reference_date, target_end_date, wis, wis_ratio.
+    """
+    return add_wis_ratio(compute_wis_scores(forecasts, truth), baseline_model)
 
 
 def compute_coverage(
