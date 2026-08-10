@@ -1,11 +1,13 @@
-streamlit>=1.35.0
-# Pinned below 2.0: the dashboard has only ever been run against pandas 1.5.3.
-# No pandas 2.x removals appear in the code, so this is expected to lift cleanly
-# once someone actually exercises the app on 2.x.
-pandas>=1.5,<2.0
-# numpy 1.x has no wheels above Python 3.12 — set the Python version explicitly
-# when deploying rather than letting the host pick a newer default.
-numpy<2
+# Capped below 1.54: the tab CSS in app.py targets [data-baseweb="tab"], and
+# 1.61 swapped BaseWeb tabs for react-aria ([data-testid="stTab"]), which leaves
+# every tab unstyled. Lift this once those selectors are updated.
+streamlit>=1.53.1,<1.54
+# pandas 1.5.x ships no wheels above cp311 and numpy 1.x none above cp312, so
+# capping either one makes the install fail from source on the Python versions
+# hosts now default to. Both upper bounds lifted: numpy is used in eight places
+# in scoring.py, none of them APIs 2.0 removed.
+pandas>=2.0,<3
+numpy>=1.26,<3
 pyarrow>=14.0
 plotly>=5.20
 requests>=2.31
