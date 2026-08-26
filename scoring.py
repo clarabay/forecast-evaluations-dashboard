@@ -148,6 +148,140 @@ def compute_wis(
     return add_wis_ratio(compute_wis_scores(forecasts, truth), baseline_model)
 
 
+def pairwise_relative_wis(scores: pd.DataFrame) -> pd.Series:
+    """
+    Pairwise relative WIS, one value per model, with the baseline at 1.0.
+
+    Averaging each model's own baseline ratios compares models on different sets
+    of forecasts — no task at all is shared by every model in the flu hub, so
+    rankings built that way are not like-for-like. This is the standard fix used
+    by the forecast hubs: for every pair of models, restrict to the tasks they
+    both submitted and take the ratio of their mean WIS; then take the geometric
+    mean of those ratios across opponents, and divide by the baseline's value so
+    the baseline reads 1.0. Each pair only needs its own overlap, so ragged
+    coverage is tolerated.
+
+    The baseline is reconstructed from the wis_baseline column, which lets this
+    work on a selection that has the baseline's own row filtered out.
+
+    Values below 1 beat the baseline. Returns an empty Series if the input has no
+    usable overlap.
+    """
+    if scores.empty:
+        return pd.Series(dtype=float)
+
+    task_keys = _RATIO_KEYS
+    wide = scores.pivot_table(index=task_keys, columns="model",
+                              values="wis", aggfunc="mean", observed=True)
+    wide.columns = [str(c) for c in wide.columns]
+
+    # The baseline's WIS per task, taken from any row for that task.
+    base = (scores[task_keys + ["wis_baseline"]]
+            .drop_duplicates(subset=task_keys)
+            .set_index(task_keys)["wis_baseline"])
+    BASE = "__baseline__"
+    wide[BASE] = base.reindex(wide.index)
+
+    models = [c for c in wide.columns]
+    mat = wide.to_numpy(dtype=float)
+    col_of = {m: i for i, m in enumerate(models)}
+
+    thetas: dict[str, float] = {}
+    for m in models:
+        i = col_of[m]
+        logs = [0.0]          # theta against itself is 1; log(1) = 0
+        for other in models:
+            if other == m:
+                continue
+            j = col_of[other]
+            both = ~np.isnan(mat[:, i]) & ~np.isnan(mat[:, j])
+            if not both.any():
+                continue      # no shared tasks — this pair cannot be compared
+            mean_i = mat[both, i].mean()
+            mean_j = mat[both, j].mean()
+            if mean_i <= 0 or mean_j <= 0:
+                continue      # a zero mean has no logarithm
+            logs.append(np.log(mean_i / mean_j))
+        thetas[m] = float(np.exp(np.mean(logs))) if logs else float("nan")
+
+    baseline_theta = thetas.get(BASE, float("nan"))
+    if not baseline_theta or not np.isfinite(baseline_theta):
+        return pd.Series(dtype=float)
+
+    return pd.Series({m: t / baseline_theta for m, t in thetas.items()
+                      if m != BASE}, dtype=float)
+
+
+def summarize_wis(scores: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per model summarising the WIS scores currently in view.
+
+    Expects the output of compute_wis / the precomputed table, already filtered
+    to whatever the user selected. Sorted best-first by median WIS ratio.
+    """
+    if scores.empty:
+        return pd.DataFrame()
+
+    # observed=True matters: model is a categorical in the precomputed tables,
+    # and without it every unused category comes back as an all-NaN row.
+    g = scores.groupby("model", observed=True)
+    out = pd.DataFrame({
+        "Median WIS ratio": g["wis_ratio"].median(),
+        # Percent, not a fraction, so the display format can render it as one.
+        "Beats baseline":   g["wis_ratio"].apply(lambda s: (s < 1).mean() * 100),
+        "Forecasts":        g["wis"].size(),
+    })
+    # Mapped onto the existing index rather than passed into the constructor: the
+    # pairwise Series is keyed by plain strings while this index is categorical,
+    # and letting pandas align the two loses the index name.
+    out.insert(1, "Pairwise rel. WIS", out.index.astype(str).map(pairwise_relative_wis(scores)))
+    out = out.sort_values("Median WIS ratio").reset_index()
+    out = out.rename(columns={"model": "Model"})
+    out.insert(0, "Rank", range(1, len(out) + 1))
+    return out
+
+
+def summarize_coverage(scores: pd.DataFrame) -> pd.DataFrame:
+    """
+    One row per model giving empirical coverage against nominal levels.
+
+    'Mean |error|' averages |empirical - nominal| over every prediction interval
+    present, so it reads as a single calibration number: smaller is better
+    calibrated, regardless of direction.
+    """
+    if scores.empty:
+        return pd.DataFrame()
+
+    g = scores.groupby("model", observed=True)
+    headline = [50, 95]
+    cols = {}
+    for level in headline:
+        col = f"{level}_cov"
+        if col in scores.columns:
+            cols[f"{level}% Coverage"] = g[col].mean()
+
+    out = pd.DataFrame(cols)
+    out["Forecasts"] = g.size()
+
+    # Mean |empirical - nominal| over every interval. Not shown as a column, but
+    # it is the ranking: it orders by overall calibration rather than by whichever
+    # single interval happens to be leftmost.
+    errors = []
+    for level in _PI_LEVELS:
+        col = f"{level}_cov"
+        if col in scores.columns:
+            errors.append((g[col].mean() - level / 100).abs())
+
+    if errors:
+        out["_mean_abs_error"] = pd.concat(errors, axis=1).mean(axis=1)
+        out = out.sort_values("_mean_abs_error").drop(columns="_mean_abs_error").reset_index()
+    else:
+        out = out.sort_values(out.columns[0]).reset_index()
+    out = out.rename(columns={"model": "Model"})
+    out.insert(0, "Rank", range(1, len(out) + 1))
+    return out
+
+
 def compute_coverage(
     forecasts: pd.DataFrame,
     truth: pd.DataFrame,

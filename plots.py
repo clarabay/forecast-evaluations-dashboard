@@ -576,13 +576,25 @@ def build_wis_boxplots(
 
     n_models = wis_df["model"].nunique()
 
+    # Vertical room per model name. The 2x2 layout stacks every model twice —
+    # once per panel row — so the figure has to be tall enough for 2 * n_models
+    # labels, not n_models. Budgeting for one pass is what squashed the names.
+    per_model_px = 22
+
     if by_horizon:
+        panel_rows = 2
+        height = max(per_model_px * n_models * panel_rows + 220, 600)
+        # vertical_spacing is a fraction of total height, so a fixed 0.18 turns
+        # into a several-hundred-pixel gap once the figure is tall. Hold the gap
+        # near 90px instead, and never exceed the original fraction.
+        v_spacing = min(0.18, 90 / height)
+
         horizons = [0, 1, 2, 3]
         subplot_positions = {0: (1, 1), 1: (1, 2), 2: (2, 1), 3: (2, 2)}
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}" for h in horizons],
-            horizontal_spacing=0.08, vertical_spacing=0.18,
+            horizontal_spacing=0.10, vertical_spacing=v_spacing,
         )
         for horizon in horizons:
             row, col = subplot_positions[horizon]
@@ -592,14 +604,11 @@ def build_wis_boxplots(
             model_order = _add_boxes(fig, h_df, row, col)
             axis_key = "yaxis" if (row == 1 and col == 1) else f"yaxis{(row - 1) * 2 + col}"
             _set_yaxis(fig, axis_key, model_order)
-        title_text = "FluSight Forecast Performance by Horizon"
-        height = max(22 * n_models + 120, 500)
     else:
+        height = max(per_model_px * n_models + 180, 400)
         fig = make_subplots(rows=1, cols=1)
         model_order = _add_boxes(fig, wis_df, 1, 1)
         _set_yaxis(fig, "yaxis", model_order)
-        title_text = "FluSight Forecast Performance (all horizons aggregated)"
-        height = max(22 * n_models + 120, 400)
 
     fig.update_xaxes(
         title_text=f"WIS Ratio (Model / {baseline_label})",
@@ -610,9 +619,14 @@ def build_wis_boxplots(
     )
     fig.update_layout(
         **_BASE_LAYOUT,
-        title=dict(text=title_text, x=0.0, xanchor="left"),
+        # _BASE_LAYOUT sets title_font, which leaves a title object with no text —
+        # plotly then renders the string "undefined". Blank it explicitly.
+        title_text="",
         height=height,
-        margin=dict(l=220, r=30, t=80, b=70),
+        # No in-figure title: it is rendered as a page heading instead, so the
+        # teal accent rule applies. Top margin trimmed to reclaim its space,
+        # while leaving room for the per-horizon subplot titles.
+        margin=dict(l=220, r=30, t=50, b=70),
         boxmode="overlay",
     )
     return fig
@@ -721,20 +735,19 @@ def build_coverage_calibration(
         fig.update_xaxes(title_text="PI (%)", tickvals=_valid_levels, **axis_style)
         fig.update_yaxes(title_text="Coverage", tickformat=".0%", range=[-0.02, 1.08], **axis_style)
         height, width = 800, 850
-        title_text = "FluSight Forecast Coverage by Horizon"
     else:
         fig = make_subplots(rows=1, cols=1)
         _add_lines(fig, df_filt, 1, 1, show_legend=True)
         fig.update_xaxes(title_text="Prediction Interval (%)", tickvals=_valid_levels, **axis_style)
         fig.update_yaxes(title_text="Coverage", tickformat=".0%", range=[-0.02, 1.08], **axis_style)
         height, width = 800, 850
-        title_text = "FluSight Forecast Coverage"
 
     fig.update_layout(
         **_BASE_LAYOUT,
-        title=dict(text=title_text, x=0.0, xanchor="left"),
+        title_text="",   # see build_wis_boxplots
         legend=dict(bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1, font=dict(size=11)),
-        margin=dict(l=65, r=30, t=70, b=60),
+        # Title rendered as a page heading — see build_wis_boxplots.
+        margin=dict(l=65, r=30, t=50, b=60),
         height=height,
         width=width,
     )

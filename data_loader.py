@@ -53,7 +53,32 @@ class HubConfig:
     truth_target_filter: Optional[str] = None  # if truth CSV has multiple targets, filter to this
     default_models: list = field(default_factory=list)  # highlighted/default eval models
     min_forecast_date: Optional[str] = None  # earliest valid forecast date for this target
+    epistorm_models: list = field(default_factory=list)  # Epistorm/Northeastern submissions
+    unit_noun: str = ""    # e.g. "hospitalizations"; blank for proportion targets,
+                           # where a bare number reads better than a unit phrase
+    ensemble_model: Optional[str] = None  # named explicitly: several hubs carry a
+                           # FluSight-ensemble directory regardless of target
+    default_location: Optional[str] = None  # location code the fan chart opens on;
+                           # falls back to US, then the first location
 
+
+# Epistorm submissions differ by target: the flu model names carry FLUH/Flu
+# suffixes and do not exist in the COVID hub, and metrocast only has the one.
+_EPISTORM_FLU = [
+    "MOBS-GLEAM_FLUH",
+    "MIGHTE-Nsemble",
+    "MIGHTE-Joint",
+    "NU_UCSD-GLEAM_AI_FLUH",
+    "CEPH-Rtrend_fluH",
+    "NEU_ISI-FluBcast",
+    "NEU_ISI-AdaptiveEnsemble",
+    "MOBS-EpyStrain_Flu",
+    "MOBS-GLEAM_RL_FLUH",
+    "NU-PGF_FLUH",
+    "Epistorm-Ensemble_Flu",
+    "Gatech-ensemble_prob",
+    "Gatech-ensemble_stat",
+]
 
 HUB_CONFIGS: dict[str, HubConfig] = {
     "Flu Hospitalizations": HubConfig(
@@ -67,6 +92,8 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         locations_source = "flusight",
         cache_dir        = "flusight_hosp",
         y_label          = "Weekly Admissions",
+        unit_noun        = "hospitalizations",
+        ensemble_model   = "FluSight-ensemble",
         socrata_id       = "mpgq-jmmr",
         socrata_col      = "totalconfflunewadm",
         default_models   = [
@@ -81,6 +108,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
             "NU_UCSD-GLEAM_AI_FLUH",
             "Epistorm-Ensemble_Flu",
         ],
+        epistorm_models   = _EPISTORM_FLU,
     ),
     "Flu ED Visits": HubConfig(
         label              = "Flu ED Visits",
@@ -93,6 +121,8 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         locations_source   = "flusight",
         cache_dir          = "flusight_ed",
         y_label            = "Proportion ED Visits",
+        unit_noun          = "proportion ED visits",
+        ensemble_model     = "FluSight-ensemble",
         socrata_id         = None,
         min_forecast_date  = "2025-11-22",
         default_models     = [
@@ -101,6 +131,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
             "MOBS-EpyStrain_Flu",
             "NEU_ISI-FluBcast",
         ],
+        epistorm_models    = _EPISTORM_FLU,
     ),
     "COVID Hospitalizations": HubConfig(
         label            = "COVID Hospitalizations",
@@ -113,12 +144,19 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         locations_source = "flusight",
         cache_dir        = "covid_hosp",
         y_label          = "Weekly Admissions",
+        unit_noun        = "hospitalizations",
+        ensemble_model   = "CovidHub-ensemble",
         socrata_id       = "ua7e-t2fy",
         socrata_col      = "totalconfcovidnewadm",
         default_models   = [
             "CovidHub-baseline",
             "CovidHub-ensemble",
             "NEU_ISI-AdaptiveEnsemble",
+        ],
+        epistorm_models  = [
+            "CEPH-Rtrend_covid",
+            "NEU_ISI-AdaptiveEnsemble",
+            "MOBS-GLEAM_COVID",
         ],
     ),
     "Metrocast": HubConfig(
@@ -132,6 +170,9 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         locations_source = "metrocast",
         cache_dir        = "metrocast",
         y_label          = "% ED Visits (Flu)",
+        unit_noun        = "percent of ED visits",
+        ensemble_model   = "epiENGAGE-ensemble_mean",
+        default_location = "boston",
         socrata_id       = None,
         truth_target_filter = "Flu ED visits pct",
         default_models   = [
@@ -139,6 +180,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
             "epiENGAGE-ensemble_mean",
             "MOBS-EpyStrain_Flu",
         ],
+        epistorm_models  = ["MOBS-EpyStrain_Flu"],
     ),
 }
 
