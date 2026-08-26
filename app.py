@@ -7,6 +7,8 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import base64
+from pathlib import Path
 from typing import Optional
 
 import streamlit as st
@@ -162,6 +164,27 @@ h5 {
     padding-top: 11px;
     border-top: 1px solid #e0e0dc;
 }
+/* Acknowledgements footer */
+.ack-rule {
+    border: none;
+    border-top: 1px solid #e4e4e0;
+    margin: 40px 0 20px;
+}
+.ack {
+    font-size: 0.82rem;
+    line-height: 1.65;
+    color: #6a6a6a;
+}
+.ack b {
+    display: block;
+    margin-bottom: 5px;
+    font-size: 0.85rem;
+    color: #333333;
+    letter-spacing: 0.02em;
+}
+.ack a { color: #17B1BF; text-decoration: none; }
+.ack a:hover { text-decoration: underline; }
+.ack-logos { margin-top: 12px; }
 footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -1137,3 +1160,45 @@ hub_tabs = st.tabs(HUB_LABELS)
 for hub_tab, hub_label in zip(hub_tabs, HUB_LABELS):
     with hub_tab:
         render_hub(hub_label)
+
+
+# ── Acknowledgements ───────────────────────────────────────────────────────────
+# At module level, after the tab loop, so it renders once at the foot of the page
+# rather than repeating inside all four hub tabs.
+
+ASSET_DIR = Path(__file__).resolve().parent / "assets"
+_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".svg": "image/svg+xml"}
+
+
+def _logo_html(stem: str, height: int = 38) -> str:
+    """
+    Inline <img> for a logo in assets/, or "" when the file is not there.
+
+    Embedded as a data URI rather than st.image so the logos sit inside the
+    acknowledgement line at an exact height, and so a missing file degrades to
+    nothing instead of a broken-image placeholder.
+    """
+    # Prefix match, so "northeastern-logo.png" or "northeastern_2024.svg" both work.
+    for path in sorted(ASSET_DIR.glob(f"{stem}*")):
+        mime = _MIME.get(path.suffix.lower())
+        if not mime:
+            continue
+        data = base64.b64encode(path.read_bytes()).decode()
+        return (f"<img src='data:{mime};base64,{data}' alt='{stem}' "
+                f"style='height:{height}px; width:auto; margin-right:22px; "
+                f"vertical-align:middle;'>")
+    return ""
+
+
+_logos = _logo_html("epistorm") + _logo_html("northeastern")
+
+st.markdown(
+    "<hr class='ack-rule'>"
+    "<div class='ack'>"
+    "This work is supported by CDC-RFA-FT-23-0069 from the CDC's Center for Forecasting and "
+    "Outbreak Analytics. Contact: "
+    "<a href='mailto:c.bay@northeastern.edu'>c.bay@northeastern.edu</a>."
+    + (f"<div class='ack-logos'>{_logos}</div>" if _logos else "")
+    + "</div>",
+    unsafe_allow_html=True,
+)
