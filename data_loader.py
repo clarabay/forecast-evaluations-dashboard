@@ -267,18 +267,38 @@ def load_truth_data(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
     """
     Returns observed data for the given hub.
     Schema: date (datetime64), location (str), value (numeric).
-    For flu hosp only: checks Socrata prelim on Wednesdays.
+
+    Where a hub has a preliminary NHSN feed, weeks newer than the hub's own
+    target file are appended to it. Two deliberate changes from the original:
+
+    - The preliminary feed is consulted every day, not only on Wednesdays. The
+      hub target file can trail it by weeks — out of season it stops updating
+      altogether — so gating on the weekday meant the observed series jumped
+      back and forth by over a month depending on which day it was opened.
+    - Preliminary rows are appended rather than substituted for the whole
+      series. The finalised history stays authoritative and only the weeks the
+      hub has not published yet come from the preliminary feed, which is
+      revised.
     """
     hub = HUB_CONFIGS[hub_label]
     official = _load_official_truth(hub)
-    official_max = official["date"].max() if not official.empty else pd.Timestamp.min
 
-    if hub.socrata_id and pd.Timestamp.now().day_of_week == 2:  # Wednesday
-        prelim = _load_preliminary_nhsn(hub, silent=True)
-        if not prelim.empty and prelim["date"].max() > official_max:
-            return prelim
+    if not hub.socrata_id:
+        return official
 
-    return official
+    prelim = _load_preliminary_nhsn(hub, silent=True)
+    if prelim.empty:
+        return official
+    if official.empty:
+        return prelim
+
+    official_max = official["date"].max()
+    newer = prelim[prelim["date"] > official_max]
+    if newer.empty:
+        return official
+
+    combined = pd.concat([official, newer], ignore_index=True)
+    return combined.sort_values(["date", "location"]).reset_index(drop=True)
 
 
 def _load_official_truth(hub: HubConfig) -> pd.DataFrame:
