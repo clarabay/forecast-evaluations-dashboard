@@ -3,16 +3,10 @@
   "configurations": [
     {
       "name": "dashboard",
-      "runtimeExecutable": "/Users/bay.c/miniforge3/envs/dashboard/bin/streamlit",
+      "runtimeExecutable": "/bin/zsh",
       "runtimeArgs": [
-        "run",
-        "app.py",
-        "--server.port",
-        "8501",
-        "--server.headless",
-        "true",
-        "--browser.gatherUsageStats",
-        "false"
+        "-c",
+        "source ~/.zshrc >/dev/null 2>&1; exec /Users/bay.c/miniforge3/envs/dashboard/bin/streamlit run app.py --server.port 8501 --server.headless true --browser.gatherUsageStats false"
       ],
       "port": 8501
     }

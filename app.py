@@ -26,6 +26,7 @@ from data_loader import (
     load_locations,
     load_precomputed,
     load_truth_data,
+    token_rejected,
 )
 from scoring import compute_coverage, compute_wis, summarize_coverage, summarize_wis
 from plots import (
@@ -519,7 +520,15 @@ def render_hub(selected_hub_label: str) -> None:
     # that position stable.
     rate_limit_slot = st.container()
     rl = check_github_rate_limit()
-    if rl and rl["remaining"] < 10:
+    if token_rejected():
+        # Otherwise a stale token fails silently: every API call 401s and the
+        # model and date lists quietly fall back to their defaults.
+        rate_limit_slot.warning(
+            "`GITHUB_TOKEN` was rejected by GitHub (401 Bad credentials) — it has expired or "
+            "been revoked. Running unauthenticated at 60 calls/hour; replace the token to "
+            "restore the higher limit."
+        )
+    elif rl and rl["remaining"] < 10:
         rate_limit_slot.warning(
             f"GitHub API: **{rl['remaining']}** / {rl['limit']} calls remaining. "
             f"Resets {rl['reset_at'].strftime('%H:%M')}. Set `GITHUB_TOKEN` to raise limit."

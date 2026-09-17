@@ -224,10 +224,40 @@ def _github_headers() -> dict:
     return h
 
 
+# Set once if GitHub rejects the configured token, so the UI can say so.
+_TOKEN_REJECTED = False
+
+
+def token_rejected() -> bool:
+    """True if a configured GITHUB_TOKEN was rejected during this run."""
+    return _TOKEN_REJECTED
+
+
+def _github_get(url: str, **kwargs) -> requests.Response:
+    """
+    GET the GitHub API, retrying without the token if the token is rejected.
+
+    An expired or revoked token is worse than no token at all: GitHub answers
+    401 to every request, while anonymous access still allows 60 an hour. Without
+    this fallback a stale token silently empties the model and forecast-date
+    lists, because every discovery call fails and the callers degrade to their
+    defaults.
+    """
+    global _TOKEN_REJECTED
+    headers = kwargs.pop("headers", None) or _github_headers()
+    response = requests.get(url, headers=headers, **kwargs)
+
+    if response.status_code == 401 and "Authorization" in headers:
+        _TOKEN_REJECTED = True
+        anonymous = {k: v for k, v in headers.items() if k != "Authorization"}
+        response = requests.get(url, headers=anonymous, **kwargs)
+
+    return response
+
+
 def check_github_rate_limit() -> dict | None:
     try:
-        r = requests.get("https://api.github.com/rate_limit",
-                         headers=_github_headers(), timeout=5)
+        r = _github_get("https://api.github.com/rate_limit", timeout=5)
         if r.status_code == 200:
             data = r.json()["rate"]
             return {
@@ -382,13 +412,12 @@ def _repo_tree(repo: str, branch: str) -> Optional[list[dict]]:
     miss rather than trusted.
     """
     try:
-        r = requests.get(f"{repo}/git/trees/{branch}",
-                         params={"recursive": "1"},
-                         headers=_github_headers(), timeout=30)
+        r = _github_get(f"{repo}/git/trees/{branch}",
+                        params={"recursive": "1"}, timeout=30)
         if r.status_code != 200:
             return None
         payload = r.json()
-    except Exception:
+    except Exception as e:
         return None
 
     if payload.get("truncated"):
@@ -523,8 +552,7 @@ def get_model_list(hub_label: str = "Flu Hospitalizations") -> list[str]:
         return sorted(index)
 
     try:
-        r = requests.get(f"{hub.api_base}/model-output",
-                         headers=_github_headers(), timeout=10)
+        r = _github_get(f"{hub.api_base}/model-output", timeout=10)
         if r.status_code == 200:
             return sorted(item["name"] for item in r.json() if item["type"] == "dir")
         if r.status_code == 403:
@@ -538,8 +566,7 @@ def get_model_list(hub_label: str = "Flu Hospitalizations") -> list[str]:
 def get_model_dates(hub_label: str, model: str) -> list[str]:
     hub = HUB_CONFIGS[hub_label]
     try:
-        r = requests.get(f"{hub.api_base}/model-output/{model}",
-                         headers=_github_headers(), timeout=10)
+        r = _github_get(f"{hub.api_base}/model-output/{model}", timeout=10)
         if r.status_code == 200:
             dates = []
             for item in r.json():
@@ -591,7 +618,7 @@ def fetch_forecast(hub_label: str, model: str, date_str: str) -> pd.DataFrame:
 
     url = f"{hub.raw_base}/model-output/{model}/{date_str}-{model}.csv"
     try:
-        r = requests.get(url, headers=_github_headers(), timeout=20)
+        r = _github_get(url, timeout=20)
         if r.status_code != 200:
             return pd.DataFrame()
         df = pd.read_csv(StringIO(r.text), dtype={"location": str})
