@@ -22,6 +22,11 @@ from plotly.subplots import make_subplots
 
 TEAL = "#17B1BF"
 
+# The "as of forecast date" observed line. Deliberately not in SET2_PALETTE,
+# so it can never be confused with a model median, and not black, so it reads
+# as a sibling of the current observed line rather than as the same series.
+VINTAGE_COLOR = "#E8590C"  # burnt orange: darker/more saturated than SET2's #fc8d62
+
 # Fan chart intervals: (q_lo, q_hi) — widest first so bands layer correctly
 FAN_INTERVALS = [
     (0.01, 0.99),
@@ -75,6 +80,8 @@ def build_fan_chart(
     ref_date: str,
     obs_weeks: int = 13,
     y_label: str = "Weekly Admissions",
+    asof_observed: pd.DataFrame | None = None,
+    asof_label: str = "",
 ) -> go.Figure:
     """
     Single-location fan chart for one reference date.
@@ -104,6 +111,30 @@ def build_fan_chart(
 
     obs_hist = obs_loc[obs_loc["date"] < ref_ts]
     obs_post = obs_loc[obs_loc["date"] >= ref_ts]
+
+    # Observed data as it stood when the forecast was made. Added first so the
+    # current (black) series draws on top of it: where nothing was revised the two
+    # coincide, and the gap between them is exactly the revision.
+    if asof_observed is not None and not asof_observed.empty:
+        asof_loc = (
+            asof_observed[
+                (asof_observed["location"] == location) &
+                (asof_observed["date"] >= obs_start) &
+                (asof_observed["date"] <= ref_ts)
+            ]
+            .sort_values("date")
+        )
+        if not asof_loc.empty:
+            asof_name = f"Observed as of {asof_label}" if asof_label else "Observed (as of forecast)"
+            fig.add_trace(go.Scatter(
+                x=asof_loc["date"], y=asof_loc["value"],
+                mode="lines+markers",
+                name=asof_name,
+                line=dict(color=VINTAGE_COLOR, width=1.8),
+                marker=dict(size=4, color=VINTAGE_COLOR),
+                legendgroup="observed_asof",
+                hovertemplate=f"<b>{asof_name}</b><br>%{{x|%b %d, %Y}}: %{{y:,.3g}}<extra></extra>",
+            ))
 
     # Solid line + filled markers for historical portion only
     if not obs_hist.empty:
@@ -241,6 +272,8 @@ def build_observed_chart(
     location_name: str,
     obs_weeks: int = 13,
     y_label: str = "Weekly Admissions",
+    asof_observed: pd.DataFrame | None = None,
+    asof_label: str = "",
 ) -> go.Figure:
     """Observed data only — no forecasts."""
     fig = go.Figure()
@@ -252,6 +285,28 @@ def build_observed_chart(
     anchor  = obs_all["date"].max() if not obs_all.empty else pd.Timestamp.now()
     obs_start = max(anchor - pd.Timedelta(weeks=obs_weeks), pd.Timestamp("2022-10-01"))
     obs_loc = obs_all[obs_all["date"] >= obs_start].sort_values("date")
+
+    # Vintage series, added first so the current data draws over it — see
+    # build_fan_chart. Here the window is anchored to the latest observation
+    # rather than to a forecast date, so the vintage is simply clipped to it.
+    if asof_observed is not None and not asof_observed.empty:
+        asof_loc = (
+            asof_observed[
+                (asof_observed["location"] == location) &
+                (asof_observed["date"] >= obs_start)
+            ]
+            .sort_values("date")
+        )
+        if not asof_loc.empty:
+            asof_name = f"Observed as of {asof_label}" if asof_label else "Observed (as of forecast)"
+            fig.add_trace(go.Scatter(
+                x=asof_loc["date"], y=asof_loc["value"],
+                mode="lines+markers",
+                name=asof_name,
+                line=dict(color=VINTAGE_COLOR, width=1.8),
+                marker=dict(size=4, color=VINTAGE_COLOR),
+                hovertemplate=f"<b>{asof_name}</b><br>%{{x|%b %d, %Y}}: %{{y:,.3g}}<extra></extra>",
+            ))
     if not obs_loc.empty:
         fig.add_trace(go.Scatter(
             x=obs_loc["date"], y=obs_loc["value"],

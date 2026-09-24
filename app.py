@@ -25,7 +25,10 @@ from data_loader import (
     load_forecasts_for_selection,
     load_locations,
     load_precomputed,
+    DELPHI_MIN_SNAPSHOT,
+    delphi_rate_limited,
     load_truth_data,
+    load_versioned_truth,
     token_rejected,
 )
 from scoring import compute_coverage, compute_wis, summarize_coverage, summarize_wis
@@ -340,6 +343,7 @@ def _forecast_findings(
     ensemble_model: Optional[str],
     ref_date: Optional[str],
     unit_noun: str = "",
+    asof_truth: Optional[pd.DataFrame] = None,
 ) -> str:
     """
     Prose describing the data and one representative forecast on the fan chart.
@@ -403,6 +407,27 @@ def _forecast_findings(
         sentence += (f", {direction} of {abs(pct):.0f}% from the last observation "
                      f"({_fmt_value(anchor_value)})")
     bits.append(sentence + ".")
+
+    # How much the anchor week has been revised since the forecast was made. The
+    # caller passes asof_truth only when the as-of toggle is on, so this sentence
+    # appears exactly when the vintage line is drawn.
+    if (asof_truth is not None and not asof_truth.empty
+            and anchor_value is not None and anchor_date is not None):
+        then = asof_truth[(asof_truth["location"] == location)
+                          & (asof_truth["date"] == anchor_date)]
+        if not then.empty:
+            was = float(then["value"].iloc[0])
+            revised = f"At the time of this forecast that week read <b>{_fmt_value(was)}</b>"
+            if was:
+                pct = (anchor_value - was) / was * 100
+                if abs(pct) < 0.05:
+                    revised += "; it has not been revised since."
+                else:
+                    revised += (f"; it has since been revised to "
+                                f"<b>{_fmt_value(anchor_value)}</b> ({pct:+.1f}%).")
+            else:
+                revised += f"; it now reads <b>{_fmt_value(anchor_value)}</b>."
+            bits.append(revised)
 
     return " ".join(bits)
 
@@ -528,6 +553,14 @@ def render_hub(selected_hub_label: str) -> None:
             "been revoked. Running unauthenticated at 60 calls/hour; replace the token to "
             "restore the higher limit."
         )
+    elif delphi_rate_limited():
+        # Anonymous Delphi access allows only 3 requests a minute, which one
+        # person clicking between forecast dates will exceed.
+        rate_limit_slot.warning(
+            "Delphi Epidata rate limit reached, so the as-of data vintage could not be "
+            "loaded. Anonymous access allows 3 requests/minute — set `DELPHI_EPIDATA_KEY` "
+            "to lift it."
+        )
     elif rl and rl["remaining"] < 10:
         rate_limit_slot.warning(
             f"GitHub API: **{rl['remaining']}** / {rl['limit']} calls remaining. "
@@ -594,7 +627,7 @@ def render_hub(selected_hub_label: str) -> None:
                 )
                 obs_weeks = {"1 mo": 4, "3 mo": 13, "6 mo": 26, "12 mo": 52, "All": 520}[obs_window_label]
 
-            ctrl4, ctrl5 = st.columns([1, 1])
+            ctrl4, ctrl5, ctrl6 = st.columns([1, 1, 1.3])
             with ctrl4:
                 # "Geographic scope" rather than "View": the options are about how
                 # many locations are drawn, and it echoes "Evaluation scope" on the
@@ -615,6 +648,52 @@ def render_hub(selected_hub_label: str) -> None:
                     horizontal=False,
                     key=f"fc_show_mode_{selected_hub_label}",
                 )
+
+            with ctrl6:
+                # Hidden entirely on hubs with no Delphi signal — a control that can
+                # never be enabled is just noise. Disabled (not hidden) on supported
+                # hubs when the selection makes it inapplicable, so its absence is
+                # never mistaken for the feature not existing.
+                if hub.delphi_signal:
+                    _asof_ok = (
+                        selected_forecast_date is not None
+                        and str(selected_forecast_date) >= DELPHI_MIN_SNAPSHOT
+                        and view_mode == "Single location"
+                    )
+                    _asof_checked = st.checkbox(
+                        "Data as of forecast date",
+                        value=False,
+                        key=f"fc_asof_{selected_hub_label}",
+                        disabled=not _asof_ok,
+                    )
+                    # A disabled checkbox still reports its last value, so the gate
+                    # has to be applied to the result as well as to the widget.
+                    show_asof = bool(_asof_checked and _asof_ok)
+                    # Say why it is greyed out, so it doesn't read as broken. Only
+                    # the date floor needs explaining; the all-locations case is
+                    # self-evident from the control the user just changed.
+                    if (not _asof_ok and view_mode == "Single location"
+                            and selected_forecast_date is not None):
+                        st.caption("Vintage data starts Nov 2024.")
+                else:
+                    show_asof = False
+
+        asof_df, asof_label = pd.DataFrame(), ""
+        if show_asof:
+            with st.spinner("Loading data vintage…"):
+                asof_df = load_versioned_truth(
+                    selected_hub_label,
+                    selected_forecast_date,
+                    "nation" if selected_location == "US" else "state",
+                )
+            if not asof_df.empty:
+                # Label with the vintage actually served, not the date asked for:
+                # when a week has no publication the API resolves to an earlier
+                # one, and naming the forecast date would misstate the chart.
+                asof_label = asof_df["report_time"].max().strftime("%b %d, %Y")
+                if asof_df[asof_df["location"] == selected_location].empty:
+                    st.caption(f"The {asof_label} data vintage has no rows for "
+                               f"{selected_loc_name}.")
 
         fc_note_intro = (
             "The solid line is observed data up to the forecast date and the dashed line after "
@@ -657,6 +736,8 @@ def render_hub(selected_hub_label: str) -> None:
                     location_name=selected_loc_name,
                     obs_weeks=obs_weeks,
                     y_label=hub.y_label,
+                    asof_observed=asof_df,
+                    asof_label=asof_label,
                 )
                 st.plotly_chart(obs_fig, use_container_width=True, config={"displayModeBar": False})
             else:
@@ -704,7 +785,7 @@ def render_hub(selected_hub_label: str) -> None:
                         _note_box(fc_note_intro, _forecast_findings(
                             _fc_for_note, truth_df, selected_location, selected_loc_name,
                             selected_models, fc_ensemble, selected_forecast_date,
-                            hub.unit_noun,
+                            hub.unit_noun, asof_df if show_asof else None,
                         )),
                         unsafe_allow_html=True,
                     )
@@ -730,6 +811,8 @@ def render_hub(selected_hub_label: str) -> None:
                             ref_date=selected_forecast_date,
                             obs_weeks=obs_weeks,
                             y_label=hub.y_label,
+                            asof_observed=asof_df,
+                            asof_label=asof_label,
                         )
                         st.plotly_chart(fan_fig, use_container_width=True, config={"displayModeBar": False})
                     else:
@@ -753,6 +836,17 @@ Observed data is shown as a black line with filled dots up to the forecast date,
 and open circles for subsequent weeks (data available after the forecast was submitted).
 
 Target: `{hub.target}`
+
+**Data as of forecast date** (flu and COVID hospitalizations) adds a brown line showing
+the observed series as it was published when the forecast was made, before later
+revisions. The gap between the two lines is the revision.
+
+Two caveats. The legend names the vintage that was actually served — if no data was
+published in the forecast week, the nearest earlier vintage is used. And the two lines
+come from different pipelines: the current line from the hub's target file plus the
+preliminary NHSN feed, the vintage line from Delphi Epidata's NHSN archive. They can
+differ by a unit or so even where nothing was revised, so read the shape rather than
+small constant offsets. Vintages start 2024-11-19.
 """)
 
     # ═══════════════════════════════════════════════════════════════════════════

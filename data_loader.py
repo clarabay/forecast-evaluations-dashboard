@@ -30,6 +30,13 @@ MAX_WORKERS    = 8
 # app never has to hold a season of raw forecasts in memory to score them.
 PRECOMPUTED_DIR = Path(__file__).resolve().parent / "precomputed"
 
+# Delphi Epidata V5. Note this is a different host from the V4 API at
+# api.delphi.cmu.edu — V5 lives here and V4 is being retired.
+DELPHI_V5_SNAPSHOT = "https://delphi.cmu.edu/epidata/v5/snapshot/"
+# V5 keeps revision history only from this date; earlier forecasts have no
+# vintage to show, which is a normal outcome rather than an error.
+DELPHI_MIN_SNAPSHOT = "2024-11-19"
+
 _FLUSIGHT_RAW = "https://raw.githubusercontent.com/cdcepi/FluSight-forecast-hub/main"
 _FLUSIGHT_API = "https://api.github.com/repos/cdcepi/FluSight-forecast-hub/contents"
 
@@ -50,6 +57,10 @@ class HubConfig:
     y_label: str            # y-axis label for fan chart
     socrata_id: Optional[str] = None   # Socrata dataset ID for prelim truth
     socrata_col: Optional[str] = None  # column name in Socrata dataset
+    # Delphi V5 signal backing the "data as of the forecast date" overlay.
+    # Only hubs with a signal here can offer the toggle.
+    delphi_source: Optional[str] = None
+    delphi_signal: Optional[str] = None
     truth_target_filter: Optional[str] = None  # if truth CSV has multiple targets, filter to this
     default_models: list = field(default_factory=list)  # highlighted/default eval models
     min_forecast_date: Optional[str] = None  # earliest valid forecast date for this target
@@ -96,6 +107,8 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         ensemble_model   = "FluSight-ensemble",
         socrata_id       = "mpgq-jmmr",
         socrata_col      = "totalconfflunewadm",
+        delphi_source    = "nhsn",
+        delphi_signal    = "confirmed_admissions_flu_ew",
         default_models   = [
             "MOBS-GLEAM_RL_FLUH",
             "MOBS-GLEAM_FLUH",
@@ -148,6 +161,8 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         ensemble_model   = "CovidHub-ensemble",
         socrata_id       = "ua7e-t2fy",
         socrata_col      = "totalconfcovidnewadm",
+        delphi_source    = "nhsn",
+        delphi_signal    = "confirmed_admissions_covid_ew",
         default_models   = [
             "CovidHub-baseline",
             "CovidHub-ensemble",
@@ -253,6 +268,149 @@ def _github_get(url: str, **kwargs) -> requests.Response:
         response = requests.get(url, headers=anonymous, **kwargs)
 
     return response
+
+
+# ── Delphi Epidata: versioned ("as of") observed data ──────────────────────────
+
+# Set once if Delphi rejects us for rate limiting, so the UI can explain the gap
+# rather than leaving the toggle looking broken.
+_DELPHI_RATE_LIMITED = False
+
+
+def delphi_rate_limited() -> bool:
+    """True if a Delphi request was rate limited during this run."""
+    return _DELPHI_RATE_LIMITED
+
+
+def _delphi_api_key() -> Optional[str]:
+    """
+    Delphi API key from the environment, falling back to Streamlit secrets.
+
+    Guarded like _github_token(): touching st.secrets raises when no secrets file
+    exists, which is the normal local case. Anonymous access works but is capped
+    at 3 requests a minute, so the key matters in practice.
+    """
+    key = os.environ.get("DELPHI_EPIDATA_KEY")
+    if key:
+        return key
+    try:
+        return st.secrets.get("DELPHI_EPIDATA_KEY")
+    except Exception:
+        return None
+
+
+def _versioned_cache_path(hub: HubConfig, snapshot_date: str, geo_type: str) -> Path:
+    return DISK_CACHE_DIR / hub.cache_dir / "asof" / f"{snapshot_date}_{geo_type}.parquet"
+
+
+@st.cache_data(ttl=None, show_spinner=False)
+def load_versioned_truth(hub_label: str, snapshot_date: str,
+                         geo_type: str = "nation") -> pd.DataFrame:
+    """
+    Observed data as it was published on snapshot_date — the "vintage".
+
+    Columns: date, location, value (matching load_truth_data) plus report_time,
+    the vintage actually served. That last column matters: if no publication
+    exists for the requested date the API resolves to an earlier one, and the
+    caller must label the chart with what it got rather than what it asked for.
+
+    ttl=None because a past vintage is immutable, unlike load_truth_data. Results
+    are also written to parquet, which is what keeps the 3-requests-per-minute
+    anonymous limit survivable across restarts.
+
+    Returns an empty frame on any failure — never raises.
+    """
+    global _DELPHI_RATE_LIMITED
+    hub = HUB_CONFIGS[hub_label]
+    if not hub.delphi_signal or not snapshot_date:
+        return pd.DataFrame()
+    # Before V5's history begins there is simply nothing to show.
+    if str(snapshot_date) < DELPHI_MIN_SNAPSHOT:
+        return pd.DataFrame()
+
+    cache_path = _versioned_cache_path(hub, snapshot_date, geo_type)
+    if cache_path.exists():
+        try:
+            return pd.read_parquet(cache_path)
+        except Exception:
+            cache_path.unlink(missing_ok=True)
+
+    params = {
+        "source": hub.delphi_source,
+        # Singular. "signals" is rejected with HTTP 422.
+        "signal": hub.delphi_signal,
+        "geo_type": geo_type,
+        "snapshot_date": snapshot_date,
+    }
+    key = _delphi_api_key()
+    if key:
+        params["api_key"] = key
+
+    try:
+        r = requests.get(DELPHI_V5_SNAPSHOT, params=params, timeout=60)
+    except Exception:
+        return pd.DataFrame()
+
+    if r.status_code == 429:
+        _DELPHI_RATE_LIMITED = True
+        return pd.DataFrame()
+    if r.status_code != 200 or not r.text.strip():
+        return pd.DataFrame()
+
+    try:
+        raw = pd.read_csv(StringIO(r.text))
+    except Exception:
+        return pd.DataFrame()
+
+    needed = {"geo_value", "reference_time", "value", "report_time"}
+    if raw.empty or not needed.issubset(raw.columns):
+        return pd.DataFrame()
+
+    # One signal can ship several imputation variants; keep the raw one so rows
+    # are not silently duplicated per reference week.
+    if "fill_method" in raw.columns:
+        raw = raw[raw["fill_method"] == "source"]
+
+    raw = raw.copy()
+    raw["report_time"] = pd.to_datetime(raw["report_time"], errors="coerce", utc=True).dt.tz_localize(None)
+    raw = raw.dropna(subset=["report_time"])
+
+    # Guard against a silent fallback to current data. If the API ever answers a
+    # vintage request with newer rows, plotting them would put the "as of" line
+    # exactly on top of the observed line — a wrong chart that looks right.
+    asked = pd.Timestamp(snapshot_date)
+    raw = raw[raw["report_time"] <= asked]
+    if raw.empty:
+        return pd.DataFrame()
+
+    # Delphi uses lowercase abbreviations ("ma") and "us"; the dashboard uses FIPS
+    # and "US". Reuse the locations table rather than a second hand-rolled mapping.
+    locs = load_locations(hub_label)
+    if "abbreviation" not in locs.columns:
+        return pd.DataFrame()
+
+    out = pd.DataFrame({
+        "date": pd.to_datetime(raw["reference_time"], errors="coerce"),
+        "abbreviation": raw["geo_value"].astype(str).str.upper(),
+        # float64 to match load_truth_data exactly; counts parse as int otherwise.
+        "value": pd.to_numeric(raw["value"], errors="coerce").astype("float64"),
+        "report_time": raw["report_time"],
+    })
+    out = out.merge(locs[["abbreviation", "location"]], on="abbreviation", how="left")
+    # dropna rather than fillna(0): a location missing from a vintage must not be
+    # drawn as zero, which would read as a collapse rather than as absent data.
+    out = out.dropna(subset=["date", "location", "value"])
+    out["location"] = out["location"].astype(str).apply(_normalize_fips)
+    out = (out[["date", "location", "value", "report_time"]]
+           .sort_values(["date", "location"]).reset_index(drop=True))
+
+    if not out.empty:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            out.to_parquet(cache_path, index=False)
+        except Exception:
+            pass
+    return out
 
 
 def check_github_rate_limit() -> dict | None:
