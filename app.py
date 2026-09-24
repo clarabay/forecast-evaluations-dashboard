@@ -26,7 +26,7 @@ from data_loader import (
     load_locations,
     load_precomputed,
     DELPHI_MIN_SNAPSHOT,
-    delphi_rate_limited,
+    delphi_last_error,
     load_truth_data,
     load_versioned_truth,
     token_rejected,
@@ -553,14 +553,6 @@ def render_hub(selected_hub_label: str) -> None:
             "been revoked. Running unauthenticated at 60 calls/hour; replace the token to "
             "restore the higher limit."
         )
-    elif delphi_rate_limited():
-        # Anonymous Delphi access allows only 3 requests a minute, which one
-        # person clicking between forecast dates will exceed.
-        rate_limit_slot.warning(
-            "Delphi Epidata rate limit reached, so the as-of data vintage could not be "
-            "loaded. Anonymous access allows 3 requests/minute — set `DELPHI_EPIDATA_KEY` "
-            "to lift it."
-        )
     elif rl and rl["remaining"] < 10:
         rate_limit_slot.warning(
             f"GitHub API: **{rl['remaining']}** / {rl['limit']} calls remaining. "
@@ -694,6 +686,13 @@ def render_hub(selected_hub_label: str) -> None:
                 if asof_df[asof_df["location"] == selected_location].empty:
                     st.caption(f"The {asof_label} data vintage has no rows for "
                                f"{selected_loc_name}.")
+            else:
+                # Never fail silently here. The checkbox stays ticked, so without
+                # this the only feedback is that the chart does not change.
+                st.warning(
+                    "Could not load the data vintage: "
+                    f"{delphi_last_error() or 'no data returned'}."
+                )
 
         fc_note_intro = (
             "The solid line is observed data up to the forecast date and the dashed line after "

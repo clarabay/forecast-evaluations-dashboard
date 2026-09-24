@@ -272,14 +272,31 @@ def _github_get(url: str, **kwargs) -> requests.Response:
 
 # ── Delphi Epidata: versioned ("as of") observed data ──────────────────────────
 
-# Set once if Delphi rejects us for rate limiting, so the UI can explain the gap
-# rather than leaving the toggle looking broken.
+# Why the last vintage fetch failed, so the UI can explain the gap rather than
+# leaving the toggle looking broken. Set on every failure path.
 _DELPHI_RATE_LIMITED = False
+_DELPHI_LAST_ERROR: Optional[str] = None
+
+
+class _DelphiUnavailable(Exception):
+    """Raised inside the cached fetch so failures are never cached.
+
+    st.cache_data stores whatever a function returns, including an empty frame,
+    and this cache has ttl=None. Returning empty on a transient 429 would pin
+    that emptiness for the life of the process and the toggle would stay dead
+    long after the limit reset. Streamlit does not cache exceptions, so raising
+    here means a failed fetch is retried on the next interaction.
+    """
 
 
 def delphi_rate_limited() -> bool:
     """True if a Delphi request was rate limited during this run."""
     return _DELPHI_RATE_LIMITED
+
+
+def delphi_last_error() -> Optional[str]:
+    """Human-readable reason the last vintage fetch failed, if it did."""
+    return _DELPHI_LAST_ERROR
 
 
 def _delphi_api_key() -> Optional[str]:
@@ -304,8 +321,8 @@ def _versioned_cache_path(hub: HubConfig, snapshot_date: str, geo_type: str) -> 
 
 
 @st.cache_data(ttl=None, show_spinner=False)
-def load_versioned_truth(hub_label: str, snapshot_date: str,
-                         geo_type: str = "nation") -> pd.DataFrame:
+def _load_versioned_truth_cached(hub_label: str, snapshot_date: str,
+                                 geo_type: str = "nation") -> pd.DataFrame:
     """
     Observed data as it was published on snapshot_date — the "vintage".
 
@@ -318,7 +335,8 @@ def load_versioned_truth(hub_label: str, snapshot_date: str,
     are also written to parquet, which is what keeps the 3-requests-per-minute
     anonymous limit survivable across restarts.
 
-    Returns an empty frame on any failure — never raises.
+    Raises _DelphiUnavailable on a fetch failure so the failure is not cached;
+    the public wrapper below turns that into an empty frame for callers.
     """
     global _DELPHI_RATE_LIMITED
     hub = HUB_CONFIGS[hub_label]
@@ -348,23 +366,27 @@ def load_versioned_truth(hub_label: str, snapshot_date: str,
 
     try:
         r = requests.get(DELPHI_V5_SNAPSHOT, params=params, timeout=60)
-    except Exception:
-        return pd.DataFrame()
+    except Exception as e:
+        raise _DelphiUnavailable(f"could not reach the Delphi API ({type(e).__name__})")
 
     if r.status_code == 429:
         _DELPHI_RATE_LIMITED = True
-        return pd.DataFrame()
-    if r.status_code != 200 or not r.text.strip():
-        return pd.DataFrame()
+        raise _DelphiUnavailable(
+            "Delphi rate limit reached — anonymous access allows only 3 requests/minute, "
+            "so set DELPHI_EPIDATA_KEY to lift it")
+    if r.status_code != 200:
+        raise _DelphiUnavailable(f"Delphi returned HTTP {r.status_code}")
+    if not r.text.strip():
+        raise _DelphiUnavailable("Delphi returned an empty response")
 
     try:
         raw = pd.read_csv(StringIO(r.text))
     except Exception:
-        return pd.DataFrame()
+        raise _DelphiUnavailable("Delphi response could not be parsed as CSV")
 
     needed = {"geo_value", "reference_time", "value", "report_time"}
     if raw.empty or not needed.issubset(raw.columns):
-        return pd.DataFrame()
+        raise _DelphiUnavailable("Delphi response was missing expected columns")
 
     # One signal can ship several imputation variants; keep the raw one so rows
     # are not silently duplicated per reference week.
@@ -381,13 +403,15 @@ def load_versioned_truth(hub_label: str, snapshot_date: str,
     asked = pd.Timestamp(snapshot_date)
     raw = raw[raw["report_time"] <= asked]
     if raw.empty:
-        return pd.DataFrame()
+        raise _DelphiUnavailable(
+            f"no vintage published on or before {snapshot_date}")
 
     # Delphi uses lowercase abbreviations ("ma") and "us"; the dashboard uses FIPS
     # and "US". Reuse the locations table rather than a second hand-rolled mapping.
     locs = load_locations(hub_label)
     if "abbreviation" not in locs.columns:
-        return pd.DataFrame()
+        raise _DelphiUnavailable("location table unavailable, so vintage rows "
+                                 "could not be mapped to FIPS codes")
 
     out = pd.DataFrame({
         "date": pd.to_datetime(raw["reference_time"], errors="coerce"),
@@ -404,13 +428,36 @@ def load_versioned_truth(hub_label: str, snapshot_date: str,
     out = (out[["date", "location", "value", "report_time"]]
            .sort_values(["date", "location"]).reset_index(drop=True))
 
-    if not out.empty:
+    if out.empty:
+        raise _DelphiUnavailable(
+            f"the {snapshot_date} vintage contained no usable rows")
+
+    # Best effort. A read-only or full cache dir must not break the feature, so
+    # the mkdir belongs inside the try alongside the write.
+    try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            out.to_parquet(cache_path, index=False)
-        except Exception:
-            pass
+        out.to_parquet(cache_path, index=False)
+    except Exception:
+        pass
     return out
+
+
+def load_versioned_truth(hub_label: str, snapshot_date: str,
+                         geo_type: str = "nation") -> pd.DataFrame:
+    """Public entry point: never raises, and records why it came back empty.
+
+    Deliberately uncached — the cache lives on the inner function so successes
+    are kept forever (a past vintage is immutable) while failures are retried.
+    """
+    global _DELPHI_LAST_ERROR
+    _DELPHI_LAST_ERROR = None
+    try:
+        return _load_versioned_truth_cached(hub_label, snapshot_date, geo_type)
+    except _DelphiUnavailable as e:
+        _DELPHI_LAST_ERROR = str(e)
+    except Exception as e:
+        _DELPHI_LAST_ERROR = f"unexpected error loading the vintage ({type(e).__name__})"
+    return pd.DataFrame()
 
 
 def check_github_rate_limit() -> dict | None:
