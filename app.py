@@ -26,6 +26,7 @@ from data_loader import (
     load_locations,
     load_precomputed,
     DELPHI_MIN_SNAPSHOT,
+    delphi_snapshot_date,
     delphi_last_error,
     load_truth_data,
     load_versioned_truth,
@@ -647,9 +648,11 @@ def render_hub(selected_hub_label: str) -> None:
                 # hubs when the selection makes it inapplicable, so its absence is
                 # never mistaken for the feature not existing.
                 if hub.delphi_signal:
+                    # Gate on the submission Wednesday, which is what actually
+                    # gets fetched, so the disabled state matches the data.
                     _asof_ok = (
                         selected_forecast_date is not None
-                        and str(selected_forecast_date) >= DELPHI_MIN_SNAPSHOT
+                        and delphi_snapshot_date(selected_forecast_date) >= DELPHI_MIN_SNAPSHOT
                         and view_mode == "Single location"
                     )
                     _asof_checked = st.checkbox(

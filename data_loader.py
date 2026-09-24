@@ -316,15 +316,30 @@ def _delphi_api_key() -> Optional[str]:
         return None
 
 
+# FluSight and the COVID hub both take submissions on the Wednesday before the
+# Saturday reference date, so the vintage a forecaster actually saw is the
+# Wednesday one. NHSN also publishes a Friday release, and asking the API for
+# the reference Saturday silently picks that up: measured on three dates, the
+# Saturday snapshot overstated the anchor week by up to 13% against the
+# Wednesday snapshot the modeller had.
+DELPHI_SUBMISSION_OFFSET_DAYS = 3
+
+
+def delphi_snapshot_date(reference_date) -> str:
+    """The vintage date for a forecast: the Wednesday before its reference Saturday."""
+    d = pd.Timestamp(reference_date) - pd.Timedelta(days=DELPHI_SUBMISSION_OFFSET_DAYS)
+    return d.strftime("%Y-%m-%d")
+
+
 def _versioned_cache_path(hub: HubConfig, snapshot_date: str, geo_type: str) -> Path:
     return DISK_CACHE_DIR / hub.cache_dir / "asof" / f"{snapshot_date}_{geo_type}.parquet"
 
 
 @st.cache_data(ttl=None, show_spinner=False)
-def _load_versioned_truth_cached(hub_label: str, snapshot_date: str,
+def _load_versioned_truth_cached(hub_label: str, reference_date: str,
                                  geo_type: str = "nation") -> pd.DataFrame:
     """
-    Observed data as it was published on snapshot_date — the "vintage".
+    Observed data as published on the submission Wednesday before reference_date.
 
     Columns: date, location, value (matching load_truth_data) plus report_time,
     the vintage actually served. That last column matters: if no publication
@@ -340,10 +355,13 @@ def _load_versioned_truth_cached(hub_label: str, snapshot_date: str,
     """
     global _DELPHI_RATE_LIMITED
     hub = HUB_CONFIGS[hub_label]
-    if not hub.delphi_signal or not snapshot_date:
+    if not hub.delphi_signal or not reference_date:
         return pd.DataFrame()
+    # Ask for the Wednesday the forecast was submitted, not its Saturday
+    # reference date, which would include NHSN's Friday release.
+    snapshot_date = delphi_snapshot_date(reference_date)
     # Before V5's history begins there is simply nothing to show.
-    if str(snapshot_date) < DELPHI_MIN_SNAPSHOT:
+    if snapshot_date < DELPHI_MIN_SNAPSHOT:
         return pd.DataFrame()
 
     cache_path = _versioned_cache_path(hub, snapshot_date, geo_type)
@@ -449,7 +467,7 @@ def _load_versioned_truth_cached(hub_label: str, snapshot_date: str,
     return out
 
 
-def load_versioned_truth(hub_label: str, snapshot_date: str,
+def load_versioned_truth(hub_label: str, reference_date: str,
                          geo_type: str = "nation") -> pd.DataFrame:
     """Public entry point: never raises, and records why it came back empty.
 
@@ -459,7 +477,7 @@ def load_versioned_truth(hub_label: str, snapshot_date: str,
     global _DELPHI_LAST_ERROR
     _DELPHI_LAST_ERROR = None
     try:
-        return _load_versioned_truth_cached(hub_label, snapshot_date, geo_type)
+        return _load_versioned_truth_cached(hub_label, reference_date, geo_type)
     except _DelphiUnavailable as e:
         _DELPHI_LAST_ERROR = str(e)
     except Exception as e:
