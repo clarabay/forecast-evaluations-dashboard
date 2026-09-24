@@ -360,12 +360,19 @@ def _load_versioned_truth_cached(hub_label: str, snapshot_date: str,
         "geo_type": geo_type,
         "snapshot_date": snapshot_date,
     }
+    # The key goes in the "token" header. V5 declares exactly two security
+    # schemes, APIKeyHeader and APIKeyQuery, both named "token"; "api_key" is
+    # not a parameter at all and any value for it fails validation with
+    # HTTP 422 ("Extra inputs are not permitted"). The header form is used over
+    # the query form so the key never lands in a URL or a proxy log.
+    headers = {}
     key = _delphi_api_key()
     if key:
-        params["api_key"] = key
+        headers["token"] = key.strip()
 
     try:
-        r = requests.get(DELPHI_V5_SNAPSHOT, params=params, timeout=60)
+        r = requests.get(DELPHI_V5_SNAPSHOT, params=params,
+                         headers=headers, timeout=60)
     except Exception as e:
         raise _DelphiUnavailable(f"could not reach the Delphi API ({type(e).__name__})")
 
