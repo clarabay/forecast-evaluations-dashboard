@@ -335,6 +335,50 @@ def _fmt_value(v: float) -> str:
     return f"{v:,.0f}" if abs(v) >= 10 else f"{v:,.3g}"
 
 
+def _observed_findings(
+    truth: pd.DataFrame,
+    location: str,
+    loc_name: str,
+    unit_noun: str,
+    all_locations: bool,
+) -> str:
+    """One sentence describing the observed series shown in 'Data only'.
+
+    The forecast wording does not apply here — there is no model, no reference
+    date and no projection — so this reports the latest observation and how it
+    has moved over the last four weeks instead.
+    """
+    if all_locations:
+        return "Showing observed data for all locations."
+    if truth is None or truth.empty:
+        return f"No observed data available for <b>{loc_name}</b>."
+
+    t = truth[truth["location"] == location].dropna(subset=["value"])
+    if t.empty:
+        return f"No observed data available for <b>{loc_name}</b>."
+    t = t.sort_values("date")
+
+    latest = t.iloc[-1]
+    noun = f" {unit_noun}" if unit_noun else ""
+    when = pd.Timestamp(latest["date"]).strftime("%b %d, %Y")
+    sentence = (f"Showing observed{noun} for <b>{loc_name}</b>. "
+                f"The most recent week (<b>{when}</b>) is "
+                f"<b>{_fmt_value(latest['value'])}</b>")
+
+    # Four weeks back where the history allows it, so the sentence says which
+    # way the series is moving rather than reporting a bare number.
+    prior_date = pd.Timestamp(latest["date"]) - pd.Timedelta(weeks=4)
+    prior = t[t["date"] == prior_date]
+    if not prior.empty:
+        was = float(prior["value"].iloc[0])
+        if was:
+            pct = (float(latest["value"]) - was) / was * 100
+            direction = "up" if pct >= 0 else "down"
+            sentence += (f", {direction} {abs(pct):.0f}% from four weeks earlier "
+                         f"({_fmt_value(was)})")
+    return sentence + "."
+
+
 def _forecast_findings(
     forecasts: pd.DataFrame,
     truth: pd.DataFrame,
@@ -643,11 +687,12 @@ def render_hub(selected_hub_label: str) -> None:
                 )
 
             with ctrl6:
-                # Hidden entirely on hubs with no Delphi signal — a control that can
-                # never be enabled is just noise. Disabled (not hidden) on supported
-                # hubs when the selection makes it inapplicable, so its absence is
-                # never mistaken for the feature not existing.
-                if hub.delphi_signal:
+                # Hidden entirely where the option does not apply at all: on hubs
+                # with no Delphi signal, and in "Data only", where a vintage of the
+                # observed series has nothing to be "as of". Disabled rather than
+                # hidden when only the current selection makes it unavailable, so
+                # its absence is never mistaken for the feature not existing.
+                if hub.delphi_signal and show_mode == "Forecasts + data":
                     # Gate on the submission Wednesday, which is what actually
                     # gets fetched, so the disabled state matches the data.
                     _asof_ok = (
@@ -697,11 +742,17 @@ def render_hub(selected_hub_label: str) -> None:
                     f"{delphi_last_error() or 'no data returned'}."
                 )
 
-        fc_note_intro = (
-            "The solid line is observed data up to the forecast date and the dashed line after "
-            "it. Shaded bands are each model's 50%, 90% and 98% prediction intervals around its "
-            "median."
-        )
+        if show_mode == "Data only":
+            fc_note_intro = (
+                "Observed data as it currently stands, including any revisions made since "
+                "it was first published. No forecasts are shown."
+            )
+        else:
+            fc_note_intro = (
+                "The solid line is observed data up to the forecast date and the dashed line after "
+                "it. Shaded bands are each model's 50%, 90% and 98% prediction intervals around its "
+                "median."
+            )
         with fc_note:
             fc_note_slot = st.empty()
         fc_note_slot.markdown(_note_box(fc_note_intro), unsafe_allow_html=True)
@@ -731,6 +782,13 @@ def render_hub(selected_hub_label: str) -> None:
             selected_models = fc_default_models
 
         if show_mode == "Data only":
+            fc_note_slot.markdown(
+                _note_box(fc_note_intro, _observed_findings(
+                    truth_df, selected_location, selected_loc_name,
+                    hub.unit_noun, view_mode != "Single location",
+                )),
+                unsafe_allow_html=True,
+            )
             if view_mode == "Single location":
                 obs_fig = build_observed_chart(
                     observed=truth_df,
