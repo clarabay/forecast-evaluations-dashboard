@@ -838,17 +838,21 @@ Observed data is shown as a black line with filled dots up to the forecast date,
 and open circles for subsequent weeks (data available after the forecast was submitted).
 
 Target: `{hub.target}`
+""")
+            # Only describe the vintage overlay on hubs that actually offer it.
+            if hub.delphi_signal:
+                st.markdown(f"""
+**Data as of forecast date** adds an orange line showing the observed series as it was
+published on the Wednesday the forecast was submitted, before later revisions. The gap
+between the two lines is the revision. Source: Delphi Epidata `{hub.delphi_source}` /
+`{hub.delphi_signal}`.
 
-**Data as of forecast date** (flu and COVID hospitalizations) adds a brown line showing
-the observed series as it was published when the forecast was made, before later
-revisions. The gap between the two lines is the revision.
-
-Two caveats. The legend names the vintage that was actually served — if no data was
-published in the forecast week, the nearest earlier vintage is used. And the two lines
+Two caveats. The legend names the vintage that was actually served — if nothing was
+published that Wednesday, the nearest earlier vintage is used. And the two lines can
 come from different pipelines: the current line from the hub's target file plus the
-preliminary NHSN feed, the vintage line from Delphi Epidata's NHSN archive. They can
-differ by a unit or so even where nothing was revised, so read the shape rather than
-small constant offsets. Vintages start 2024-11-19.
+preliminary feed where one applies, the vintage line from Delphi. They can differ
+slightly even where nothing was revised, so read the shape rather than small constant
+offsets. Vintages start 2024-11-19.
 """)
 
     # ═══════════════════════════════════════════════════════════════════════════

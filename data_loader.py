@@ -33,8 +33,10 @@ PRECOMPUTED_DIR = Path(__file__).resolve().parent / "precomputed"
 # Delphi Epidata V5. Note this is a different host from the V4 API at
 # api.delphi.cmu.edu — V5 lives here and V4 is being retired.
 DELPHI_V5_SNAPSHOT = "https://delphi.cmu.edu/epidata/v5/snapshot/"
-# V5 keeps revision history only from this date; earlier forecasts have no
-# vintage to show, which is a normal outcome rather than an error.
+# V5 keeps NHSN revision history only from this date; earlier forecasts have no
+# vintage to show, which is a normal outcome rather than an error. NSSP reaches
+# further back (2024-04-18), but the ED-visits hub's first forecast date is
+# 2025-11-22, so this single conservative floor excludes nothing.
 DELPHI_MIN_SNAPSHOT = "2024-11-19"
 
 _FLUSIGHT_RAW = "https://raw.githubusercontent.com/cdcepi/FluSight-forecast-hub/main"
@@ -61,6 +63,10 @@ class HubConfig:
     # Only hubs with a signal here can offer the toggle.
     delphi_source: Optional[str] = None
     delphi_signal: Optional[str] = None
+    # Multiplier taking the signal's units to the hub target's units. NSSP
+    # publishes a percent while the ED-visits target is a proportion, so that
+    # hub needs 0.01; the NHSN admission counts need none.
+    delphi_scale: float = 1.0
     truth_target_filter: Optional[str] = None  # if truth CSV has multiple targets, filter to this
     default_models: list = field(default_factory=list)  # highlighted/default eval models
     min_forecast_date: Optional[str] = None  # earliest valid forecast date for this target
@@ -133,6 +139,9 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         baseline           = "FluSight-baseline",
         locations_source   = "flusight",
         cache_dir          = "flusight_ed",
+        delphi_source      = "nssp",
+        delphi_signal      = "pct_ed_visits_influenza",
+        delphi_scale       = 0.01,   # NSSP percent -> hub proportion
         y_label            = "Proportion ED Visits",
         unit_noun          = "proportion ED visits",
         ensemble_model     = "FluSight-ensemble",
@@ -442,7 +451,8 @@ def _load_versioned_truth_cached(hub_label: str, reference_date: str,
         "date": pd.to_datetime(raw["reference_time"], errors="coerce"),
         "abbreviation": raw["geo_value"].astype(str).str.upper(),
         # float64 to match load_truth_data exactly; counts parse as int otherwise.
-        "value": pd.to_numeric(raw["value"], errors="coerce").astype("float64"),
+        "value": (pd.to_numeric(raw["value"], errors="coerce").astype("float64")
+                  * hub.delphi_scale),
         "report_time": raw["report_time"],
     })
     out = out.merge(locs[["abbreviation", "location"]], on="abbreviation", how="left")
