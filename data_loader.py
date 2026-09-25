@@ -59,6 +59,11 @@ class HubConfig:
     y_label: str            # y-axis label for fan chart
     socrata_id: Optional[str] = None   # Socrata dataset ID for prelim truth
     socrata_col: Optional[str] = None  # column name in Socrata dataset
+    # Layout of that feed. The NHSN and NSSP datasets share nothing but the
+    # host: different date and geography columns, abbreviations vs full state
+    # names, counts vs percents, and NSSP needs a server-side filter because
+    # it is county-level. Dispatch on this rather than parameterising all of it.
+    socrata_kind: str = "nhsn"         # "nhsn" | "nssp"
     # Delphi V5 signal backing the "data as of the forecast date" overlay.
     # Only hubs with a signal here can offer the toggle.
     delphi_source: Optional[str] = None
@@ -145,7 +150,11 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         y_label            = "Proportion ED Visits",
         unit_noun          = "proportion ED visits",
         ensemble_model     = "FluSight-ensemble",
-        socrata_id         = None,
+        # More current than the hub's target file, which trails by weeks out of
+        # season. Same underlying NSSP data, so the two agree where they overlap.
+        socrata_id         = "rdmq-nq56",
+        socrata_col        = "percent_visits_influenza",
+        socrata_kind       = "nssp",
         min_forecast_date  = "2025-11-22",
         default_models     = [
             "FluSight-baseline",
@@ -556,7 +565,7 @@ def load_truth_data(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
     if not hub.socrata_id:
         return official
 
-    prelim = _load_preliminary_nhsn(hub, silent=True)
+    prelim = _load_preliminary(hub, silent=True)
     if prelim.empty:
         return official
     if official.empty:
@@ -602,6 +611,61 @@ def _load_official_truth(hub: HubConfig) -> pd.DataFrame:
     df["value"]    = pd.to_numeric(df["value"], errors="coerce").fillna(0)
 
     return df.sort_values("date").reset_index(drop=True)
+
+
+def _load_preliminary(hub: HubConfig, silent: bool = False) -> pd.DataFrame:
+    """Latest published observations from CDC's Socrata feed for this hub."""
+    if hub.socrata_kind == "nssp":
+        return _load_preliminary_nssp(hub, silent=silent)
+    return _load_preliminary_nhsn(hub, silent=silent)
+
+
+def _load_preliminary_nssp(hub: HubConfig, silent: bool = False) -> pd.DataFrame:
+    """
+    State and national ED-visit percentages from the NSSP trajectories dataset.
+
+    Three things differ from the NHSN feed. The dataset is county-level — 664k
+    rows against 11k for the rollups — so county='All' is filtered server-side
+    rather than downloaded and discarded. Geography is a full state name
+    ("Kansas", "United States") instead of an abbreviation. And the values are
+    percentages, while the hub target is a proportion.
+    """
+    if not hub.socrata_id or not hub.socrata_col:
+        return pd.DataFrame()
+    try:
+        from sodapy import Socrata
+        client = Socrata("data.cdc.gov", None)
+        results = client.get(
+            hub.socrata_id,
+            select=f"week_end,geography,{hub.socrata_col}",
+            where="county='All'",
+            limit=50_000,
+        )
+        raw = pd.DataFrame.from_records(results)
+    except Exception as e:
+        if not silent:
+            st.warning(f"Could not load preliminary NSSP data: {e}")
+        return pd.DataFrame()
+
+    if raw.empty or not {"week_end", "geography", hub.socrata_col}.issubset(raw.columns):
+        return pd.DataFrame()
+
+    raw = raw.copy()
+    raw["date"] = pd.to_datetime(raw["week_end"], errors="coerce")
+    # Percent -> proportion, matching the hub target's units.
+    raw["value"] = pd.to_numeric(raw[hub.socrata_col], errors="coerce") / 100.0
+    # locations.csv calls the national row "US", not "United States".
+    raw["location_name"] = raw["geography"].replace({"United States": "US"})
+
+    locs = pd.read_csv(f"{_FLUSIGHT_RAW}/auxiliary-data/locations.csv")
+    locs["location"] = locs["location"].astype(str).apply(_normalize_fips)
+    raw = raw.merge(locs[["location_name", "location"]], on="location_name", how="left")
+
+    # dropna rather than fillna(0): an unmatched geography must not be drawn as
+    # zero, which would read as a collapse rather than as absent data.
+    raw = raw[["date", "location", "value"]].dropna()
+    raw["location"] = raw["location"].astype(str).apply(_normalize_fips)
+    return raw.sort_values(["date", "location"]).reset_index(drop=True)
 
 
 def _load_preliminary_nhsn(hub: HubConfig, silent: bool = False) -> pd.DataFrame:

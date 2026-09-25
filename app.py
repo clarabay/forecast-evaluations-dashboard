@@ -743,10 +743,7 @@ def render_hub(selected_hub_label: str) -> None:
                 )
 
         if show_mode == "Data only":
-            fc_note_intro = (
-                "Observed data as it currently stands, including any revisions made since "
-                "it was first published. No forecasts are shown."
-            )
+            fc_note_intro = "Observed data as it currently stands."
         else:
             fc_note_intro = (
                 "The solid line is observed data up to the forecast date and the dashed line after "
@@ -783,7 +780,7 @@ def render_hub(selected_hub_label: str) -> None:
 
         if show_mode == "Data only":
             fc_note_slot.markdown(
-                _note_box(fc_note_intro, _observed_findings(
+                _note_box(fc_note_intro + " " + _observed_findings(
                     truth_df, selected_location, selected_loc_name,
                     hub.unit_noun, view_mode != "Single location",
                 )),
