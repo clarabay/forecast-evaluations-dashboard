@@ -11,6 +11,8 @@ Cache priority:
 from __future__ import annotations
 
 import os
+import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from io import StringIO
@@ -25,6 +27,25 @@ import streamlit as st
 
 DISK_CACHE_DIR = Path.home() / ".flusight_cache"
 MAX_WORKERS    = 8
+
+# Set DASH_PROFILE=1 to print per-call timings for the cold load path. Cheap to
+# leave in: the context manager short-circuits when it is off, and attributing a
+# slow cold start by guesswork wasted time more than once.
+_PROFILE = os.environ.get("DASH_PROFILE") == "1"
+
+
+@contextmanager
+def _timed(label: str):
+    if not _PROFILE:
+        yield
+        return
+    t0 = time.perf_counter()
+    try:
+        yield
+    finally:
+        # flush: stdout is block-buffered under streamlit, so prints otherwise
+        # sit in the buffer and never reach the log.
+        print(f"[profile] {label:<44} {time.perf_counter() - t0:6.2f}s", flush=True)
 
 # Scores precomputed by scripts/build_scores.py and committed to the repo, so the
 # app never has to hold a season of raw forecasts in memory to score them.
@@ -349,6 +370,21 @@ def delphi_snapshot_date(reference_date) -> str:
     return d.strftime("%Y-%m-%d")
 
 
+def _socrata_app_token() -> Optional[str]:
+    """Socrata app token, which only raises the throttling limit — it is not auth.
+
+    Guarded like _github_token(): touching st.secrets raises when no secrets
+    file exists, which is the normal local case.
+    """
+    tok = os.environ.get("SOCRATA_APP_TOKEN")
+    if tok:
+        return tok
+    try:
+        return st.secrets.get("SOCRATA_APP_TOKEN")
+    except Exception:
+        return None
+
+
 def _versioned_cache_path(hub: HubConfig, snapshot_date: str, geo_type: str) -> Path:
     return DISK_CACHE_DIR / hub.cache_dir / "asof" / f"{snapshot_date}_{geo_type}.parquet"
 
@@ -528,7 +564,8 @@ def load_locations(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
         url = f"{hub.raw_base}/auxiliary-data/locations.csv"
     else:
         url = f"{_FLUSIGHT_RAW}/auxiliary-data/locations.csv"
-    df = pd.read_csv(url)
+    with _timed(f"locations.csv [{hub_label}]"):
+        df = pd.read_csv(url)
     df["location"] = df["location"].astype(str).apply(_normalize_fips)
     # Normalize column names — metrocast may differ
     df.columns = [c.strip().lower() for c in df.columns]
@@ -561,29 +598,32 @@ def load_truth_data(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
     """
     hub = HUB_CONFIGS[hub_label]
     official = _load_official_truth(hub)
+    out = official
 
-    if not hub.socrata_id:
-        return official
+    if hub.socrata_id:
+        prelim = _load_preliminary(hub, silent=True)
+        if official.empty:
+            out = prelim
+        elif not prelim.empty:
+            newer = prelim[prelim["date"] > official["date"].max()]
+            if not newer.empty:
+                out = (pd.concat([official, newer], ignore_index=True)
+                       .sort_values(["date", "location"]).reset_index(drop=True))
 
-    prelim = _load_preliminary(hub, silent=True)
-    if prelim.empty:
-        return official
-    if official.empty:
-        return prelim
-
-    official_max = official["date"].max()
-    newer = prelim[prelim["date"] > official_max]
-    if newer.empty:
-        return official
-
-    combined = pd.concat([official, newer], ignore_index=True)
-    return combined.sort_values(["date", "location"]).reset_index(drop=True)
+    # Stamped on the result rather than read from the clock at render time: this
+    # function is cached for an hour, so "now" in the UI would claim a refresh
+    # that did not happen. Set last, on whichever frame is being returned,
+    # because attrs do not reliably survive concat and sort.
+    out = out.copy()
+    out.attrs["fetched_at"] = pd.Timestamp.now()
+    return out
 
 
 def _load_official_truth(hub: HubConfig) -> pd.DataFrame:
     url = f"{hub.raw_base}/{hub.truth_file}"
     try:
-        df = pd.read_csv(url, dtype={"location": str})
+        with _timed(f"truth csv [{hub.label}]"):
+            df = pd.read_csv(url, dtype={"location": str})
     except Exception:
         return pd.DataFrame()
 
@@ -634,13 +674,14 @@ def _load_preliminary_nssp(hub: HubConfig, silent: bool = False) -> pd.DataFrame
         return pd.DataFrame()
     try:
         from sodapy import Socrata
-        client = Socrata("data.cdc.gov", None)
-        results = client.get(
-            hub.socrata_id,
-            select=f"week_end,geography,{hub.socrata_col}",
-            where="county='All'",
-            limit=50_000,
-        )
+        client = Socrata("data.cdc.gov", _socrata_app_token())
+        with _timed(f"socrata nssp [{hub.label}]"):
+            results = client.get(
+                hub.socrata_id,
+                select=f"week_end,geography,{hub.socrata_col}",
+                where="county='All'",
+                limit=50_000,
+            )
         raw = pd.DataFrame.from_records(results)
     except Exception as e:
         if not silent:
@@ -657,8 +698,9 @@ def _load_preliminary_nssp(hub: HubConfig, silent: bool = False) -> pd.DataFrame
     # locations.csv calls the national row "US", not "United States".
     raw["location_name"] = raw["geography"].replace({"United States": "US"})
 
-    locs = pd.read_csv(f"{_FLUSIGHT_RAW}/auxiliary-data/locations.csv")
-    locs["location"] = locs["location"].astype(str).apply(_normalize_fips)
+    locs = load_locations(hub.label)
+    if "location_name" not in locs.columns:
+        return pd.DataFrame()
     raw = raw.merge(locs[["location_name", "location"]], on="location_name", how="left")
 
     # dropna rather than fillna(0): an unmatched geography must not be drawn as
@@ -673,9 +715,19 @@ def _load_preliminary_nhsn(hub: HubConfig, silent: bool = False) -> pd.DataFrame
         return pd.DataFrame()
     try:
         from sodapy import Socrata
-        client = Socrata("data.cdc.gov", None)
-        results = client.get(hub.socrata_id, limit=100_000)
-        raw = pd.DataFrame.from_records(results)
+        client = Socrata("data.cdc.gov", _socrata_app_token())
+        # Measured: requesting the full row took 92s against 1.4s for the NSSP
+        # feed, which selects server-side. This dataset is very wide and only
+        # three of its columns are ever used, so select them and let Socrata
+        # drop the rest before it serialises anything.
+        with _timed(f"socrata nhsn [{hub.label}]"):
+            results = client.get(
+                hub.socrata_id,
+                select=f"weekendingdate,jurisdiction,{hub.socrata_col}",
+                limit=100_000,
+            )
+        with _timed(f"socrata nhsn -> DataFrame [{hub.label}]"):
+            raw = pd.DataFrame.from_records(results)
     except Exception as e:
         if not silent:
             st.warning(f"Could not load preliminary NHSN data: {e}")
@@ -691,8 +743,9 @@ def _load_preliminary_nhsn(hub: HubConfig, silent: bool = False) -> pd.DataFrame
     raw["value"] = pd.to_numeric(raw[hub.socrata_col], errors="coerce").fillna(0).astype(int)
     raw["jurisdiction"] = raw["jurisdiction"].apply(lambda x: "US" if x == "USA" else x)
 
-    locs = pd.read_csv(f"{_FLUSIGHT_RAW}/auxiliary-data/locations.csv")
-    locs["location"] = locs["location"].astype(str).apply(_normalize_fips)
+    locs = load_locations(hub.label)
+    if "abbreviation" not in locs.columns:
+        return pd.DataFrame()
     raw = raw.merge(locs[["abbreviation", "location"]], left_on="jurisdiction",
                     right_on="abbreviation", how="left")
     raw = raw[["date", "location", "value"]].dropna(subset=["location"])
@@ -716,8 +769,9 @@ def _repo_tree(repo: str, branch: str) -> Optional[list[dict]]:
     miss rather than trusted.
     """
     try:
-        r = _github_get(f"{repo}/git/trees/{branch}",
-                        params={"recursive": "1"}, timeout=30)
+        with _timed(f"github trees [{repo.split('/')[-1]}]"):
+            r = _github_get(f"{repo}/git/trees/{branch}",
+                            params={"recursive": "1"}, timeout=30)
         if r.status_code != 200:
             return None
         payload = r.json()

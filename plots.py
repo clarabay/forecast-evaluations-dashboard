@@ -329,6 +329,29 @@ def build_observed_chart(
     return fig
 
 
+def _panel_date_axis(fig, n_panels: int, ncols: int) -> None:
+    """Date labels on the bottom-most panel of each column of a small-multiple grid.
+
+    Ticks on all 53 panels would be unreadable, and the last grid row is only
+    partly filled, so each column hands its labels to its lowest occupied panel.
+    Axes are numbered row-major by make_subplots, so panel i is xaxis{i+1}.
+    """
+    for col in range(ncols):
+        idxs = [i for i in range(n_panels) if i % ncols == col]
+        if not idxs:
+            continue
+        last = max(idxs)
+        key = "xaxis" if last == 0 else f"xaxis{last + 1}"
+        if key in fig.layout:
+            fig.layout[key].update(
+                showticklabels=True,
+                tickfont=dict(size=8, color="#888888"),
+                tickformat="%b %d",
+                nticks=3,
+                tickangle=0,
+            )
+
+
 def build_all_states_observed(
     observed: pd.DataFrame,
     locations_df: pd.DataFrame,
@@ -362,7 +385,7 @@ def build_all_states_observed(
         vertical_spacing=0.06,
     )
 
-    for idx, (fips, _) in enumerate(locs):
+    for idx, (fips, name) in enumerate(locs):
         row = idx // ncols + 1
         col = idx % ncols + 1
         obs_loc = (
@@ -380,15 +403,20 @@ def build_all_states_observed(
                 line=dict(color="#111111", width=1.2),
                 marker=dict(size=2, color="#111111"),
                 showlegend=False,
-                hoverinfo="skip",
+                # The panels carry no axis labels, so the hover has to name the
+                # location itself. ",.4~g" keeps counts readable (1,964) without
+                # mangling proportions (0.0031).
+                hovertemplate=(f"<b>{name}</b><br>%{{x|%b %d, %Y}}"
+                               "<br>%{y:,.4~g}<extra></extra>"),
             ), row=row, col=col)
 
     fig.update_xaxes(showticklabels=False, showgrid=False, linecolor="#dddddd", showline=True)
     fig.update_yaxes(showticklabels=False, showgrid=False, linecolor="#dddddd", showline=True)
+    _panel_date_axis(fig, len(locs), ncols)
     fig.update_layout(
         **_BASE_LAYOUT,
         title=dict(text="All Locations", x=0.0, xanchor="left"),
-        margin=dict(l=10, r=30, t=55, b=10),
+        margin=dict(l=10, r=30, t=55, b=30),
         height=max(160 * nrows, 600),
         showlegend=False,
     )
@@ -442,7 +470,7 @@ def build_all_states_panel(
 
     legend_added: set[str] = set()
 
-    for idx, (fips, abbr, _) in enumerate(locs):
+    for idx, (fips, abbr, panel_name) in enumerate(locs):
         row = idx // ncols + 1
         col = idx % ncols + 1
         rc  = dict(row=row, col=col)
@@ -468,6 +496,8 @@ def build_all_states_panel(
                 marker=dict(size=2, color="#111111"),
                 showlegend=False,
                 legendgroup="observed",
+                hovertemplate=(f"<b>{panel_name}</b><br>%{{x|%b %d, %Y}}"
+                               "<br>Observed %{y:,.4~g}<extra></extra>"),
             ), **rc)
 
         if not obs_post.empty:
@@ -490,7 +520,8 @@ def build_all_states_panel(
                             symbol="circle"),
                 showlegend=False,
                 legendgroup="observed_post",
-                hoverinfo="skip",
+                hovertemplate=(f"<b>{panel_name}</b><br>%{{x|%b %d, %Y}}"
+                               "<br>Observed %{y:,.4~g} (after forecast)<extra></extra>"),
             ), **rc)
 
         fc_loc = forecasts[
@@ -540,16 +571,18 @@ def build_all_states_panel(
                     name=model,
                     showlegend=show_leg,
                     legendgroup=model,
-                    hoverinfo="skip",
+                    hovertemplate=(f"<b>{panel_name}</b><br>%{{x|%b %d, %Y}}"
+                                   f"<br>{model} median %{{y:,.4~g}}<extra></extra>"),
                 ), **rc)
 
     fig.update_xaxes(showticklabels=False, showgrid=False, linecolor="#dddddd", showline=True)
     fig.update_yaxes(showticklabels=False, showgrid=False, linecolor="#dddddd", showline=True)
+    _panel_date_axis(fig, len(locs), ncols)
 
     fig.update_layout(
         **_BASE_LAYOUT,
         title=dict(text="All Locations", x=0.0, xanchor="left"),
-        margin=dict(l=10, r=140, t=55, b=10),
+        margin=dict(l=10, r=140, t=55, b=30),
         legend=dict(x=1.01, y=1.0, xanchor="left",
                     bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1,
                     font=dict(size=11)),
@@ -590,21 +623,50 @@ def build_wis_boxplots(
             for m in model_order
         ]
 
+    def _box_stats(df):
+        """Five-number summary per model, the way plotly would compute it.
+
+        Passing raw arrays made every box carry one float *and* one repeated
+        copy of the model name per observation — 265k of each on the flu hub —
+        even though boxpoints=False and hoverinfo="skip" mean no individual
+        point is ever drawn or hovered. Plotly only ever used them to derive
+        these five numbers, so deriving them here sends five instead.
+
+        Quantiles use pandas' linear interpolation, which is plotly's default
+        quartilemethod, and the fences are Tukey: the most extreme observations
+        still within 1.5 IQR of the quartiles, which is what plotly draws.
+        """
+        d = df.dropna(subset=["wis_ratio"])
+        if d.empty:
+            return None
+        g = d.groupby("model", observed=True)["wis_ratio"]
+        st_ = g.quantile([0.25, 0.5, 0.75]).unstack()
+        st_.columns = ["q1", "med", "q3"]
+        iqr = st_["q3"] - st_["q1"]
+        st_["lo_cut"] = st_["q1"] - 1.5 * iqr
+        st_["hi_cut"] = st_["q3"] + 1.5 * iqr
+
+        j = d.join(st_[["lo_cut", "hi_cut"]], on="model")
+        inl = j[(j["wis_ratio"] >= j["lo_cut"]) & (j["wis_ratio"] <= j["hi_cut"])]
+        f = inl.groupby("model", observed=True)["wis_ratio"].agg(["min", "max"])
+        st_["lowerfence"] = f["min"].reindex(st_.index).fillna(st_["q1"])
+        st_["upperfence"] = f["max"].reindex(st_.index).fillna(st_["q3"])
+        return st_.sort_values("med", ascending=False)
+
     def _add_boxes(fig, df, row, col):
-        model_order = (
-            df.groupby("model")["wis_ratio"]
-            .median()
-            .sort_values(ascending=False)
-            .index.tolist()
-        )
+        stats = _box_stats(df)
+        if stats is None:
+            fig.add_vline(x=1.0, line=dict(color="#aaaaaa", width=1, dash="dot"),
+                          row=row, col=col)
+            return []
+        model_order = stats.index.tolist()
         for model in model_order:
-            m_vals = df[df["model"] == model]["wis_ratio"].dropna()
-            if m_vals.empty:
-                continue
-            median_val = float(m_vals.median())
+            r = stats.loc[model]
+            median_val = float(r["med"])
             fig.add_trace(go.Box(
-                x=m_vals, y=[model] * len(m_vals),
-                orientation="h", name=model,
+                y=[model], orientation="h", name=model,
+                q1=[r["q1"]], median=[r["med"]], q3=[r["q3"]],
+                lowerfence=[r["lowerfence"]], upperfence=[r["upperfence"]],
                 marker_color=TEAL, fillcolor=_hex_to_rgba(TEAL, 0.1),
                 line=dict(color=TEAL, width=1.2),
                 showlegend=False, boxmean=False, boxpoints=False,

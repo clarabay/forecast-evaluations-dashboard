@@ -545,16 +545,42 @@ def render_hub(selected_hub_label: str) -> None:
     hub = HUB_CONFIGS[selected_hub_label]
 
     st.markdown(
-        f"<p style='color:#666; font-size:0.88rem; margin-top:4px; margin-bottom:20px;'>"
+        f"<p style='color:#666; font-size:0.88rem; margin-top:4px; margin-bottom:4px;'>"
         f"{_hub_descriptions.get(selected_hub_label, '')}</p>",
         unsafe_allow_html=True,
     )
+    # Filled once the data is loaded, a few lines below. Always created, so the
+    # element count ahead of st.tabs stays fixed and the tab selection survives
+    # a rerun.
+    freshness_slot = st.empty()
 
     # ── Load reference data ────────────────────────────────────────────────────
     with st.spinner("Loading reference data…"):
         locations_df = load_locations(selected_hub_label)
         all_models   = get_model_list(selected_hub_label)
         truth_df     = load_truth_data(selected_hub_label)
+
+    # ── Data freshness ─────────────────────────────────────────────────────────
+    _bits = []
+    if not truth_df.empty:
+        _bits.append("Observed data through <b>"
+                     + truth_df["date"].max().strftime("%b %d, %Y") + "</b>")
+    _wis_all = load_precomputed(selected_hub_label, "wis")
+    if not _wis_all.empty and "reference_date" in _wis_all.columns:
+        _bits.append("scored forecasts through <b>"
+                     + pd.to_datetime(_wis_all["reference_date"]).max().strftime("%b %d, %Y")
+                     + "</b>")
+    # The stamp travels with the cached frame, so this is when the data was
+    # actually fetched, not when the page happened to render.
+    _fetched = truth_df.attrs.get("fetched_at")
+    if _fetched is not None:
+        _bits.append("fetched " + pd.Timestamp(_fetched).strftime("%H:%M"))
+    if _bits:
+        freshness_slot.markdown(
+            "<p style='color:#999; font-size:0.78rem; margin-top:0; margin-bottom:18px;'>"
+            + " &nbsp;·&nbsp; ".join(_bits) + "</p>",
+            unsafe_allow_html=True,
+        )
 
     loc_df       = locations_df.sort_values("location_name")
     loc_names    = loc_df["location_name"].tolist()
