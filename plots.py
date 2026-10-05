@@ -345,9 +345,11 @@ def _panel_date_axis(fig, n_panels: int, ncols: int) -> None:
         if key in fig.layout:
             fig.layout[key].update(
                 showticklabels=True,
-                tickfont=dict(size=8, color="#888888"),
+                tickfont=dict(size=10, color="#666666"),
                 tickformat="%b %d",
-                nticks=3,
+                # Two ticks, not three: at 10px the panels are narrow enough
+                # that three labels ran into the next column's first one.
+                nticks=2,
                 tickangle=0,
             )
 
@@ -416,7 +418,7 @@ def build_all_states_observed(
     fig.update_layout(
         **_BASE_LAYOUT,
         title=dict(text="All Locations", x=0.0, xanchor="left"),
-        margin=dict(l=10, r=30, t=55, b=30),
+        margin=dict(l=10, r=30, t=55, b=38),
         height=max(160 * nrows, 600),
         showlegend=False,
     )
@@ -582,7 +584,7 @@ def build_all_states_panel(
     fig.update_layout(
         **_BASE_LAYOUT,
         title=dict(text="All Locations", x=0.0, xanchor="left"),
-        margin=dict(l=10, r=140, t=55, b=30),
+        margin=dict(l=10, r=140, t=55, b=38),
         legend=dict(x=1.01, y=1.0, xanchor="left",
                     bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1,
                     font=dict(size=11)),

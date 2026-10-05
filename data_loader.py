@@ -610,12 +610,6 @@ def load_truth_data(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
                 out = (pd.concat([official, newer], ignore_index=True)
                        .sort_values(["date", "location"]).reset_index(drop=True))
 
-    # Stamped on the result rather than read from the clock at render time: this
-    # function is cached for an hour, so "now" in the UI would claim a refresh
-    # that did not happen. Set last, on whichever frame is being returned,
-    # because attrs do not reliably survive concat and sort.
-    out = out.copy()
-    out.attrs["fetched_at"] = pd.Timestamp.now()
     return out
 
 
