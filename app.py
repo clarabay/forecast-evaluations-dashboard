@@ -29,6 +29,7 @@ from data_loader import (
     delphi_snapshot_date,
     delphi_last_error,
     load_truth_data,
+    observed_last_updated,
     load_versioned_truth,
     token_rejected,
 )
@@ -561,11 +562,14 @@ def render_hub(selected_hub_label: str) -> None:
         truth_df     = load_truth_data(selected_hub_label)
 
     # ── Data freshness ─────────────────────────────────────────────────────────
-    if not truth_df.empty:
+    # When the source last republished, not the date of the last data point —
+    # those differ by weeks, and only the former says whether this is stale.
+    _updated = observed_last_updated(selected_hub_label)
+    if _updated is not None:
         freshness_slot.markdown(
             "<p style='color:#999; font-size:0.78rem; margin-top:0; margin-bottom:18px;'>"
             "Observed data last updated: <b>"
-            + truth_df["date"].max().strftime("%b %d, %Y")
+            + pd.Timestamp(_updated).strftime("%b %d, %Y")
             + "</b></p>",
             unsafe_allow_html=True,
         )

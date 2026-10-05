@@ -80,6 +80,10 @@ class HubConfig:
     y_label: str            # y-axis label for fan chart
     socrata_id: Optional[str] = None   # Socrata dataset ID for prelim truth
     socrata_col: Optional[str] = None  # column name in Socrata dataset
+    # NHSN publishes the same metrics twice a week: a preliminary release on
+    # Wednesday and the revised one on Friday. Reading both means the series
+    # picks up a new week on Wednesday and its corrected value on Friday.
+    socrata_id_prelim: Optional[str] = None
     # Layout of that feed. The NHSN and NSSP datasets share nothing but the
     # host: different date and geography columns, abbreviations vs full state
     # names, counts vs percents, and NSSP needs a server-side filter because
@@ -137,7 +141,8 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         y_label          = "Weekly Admissions",
         unit_noun        = "hospitalizations",
         ensemble_model   = "FluSight-ensemble",
-        socrata_id       = "mpgq-jmmr",
+        socrata_id        = "ua7e-t2fy",   # NHSN HRD, revised (Friday)
+        socrata_id_prelim = "mpgq-jmmr",   # NHSN HRD, preliminary (Wednesday)
         socrata_col      = "totalconfflunewadm",
         delphi_source    = "nhsn",
         delphi_signal    = "confirmed_admissions_flu_ew",
@@ -198,8 +203,12 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         y_label          = "Weekly Admissions",
         unit_noun        = "hospitalizations",
         ensemble_model   = "CovidHub-ensemble",
-        socrata_id       = "ua7e-t2fy",
-        socrata_col      = "totalconfcovidnewadm",
+        socrata_id        = "ua7e-t2fy",   # NHSN HRD, revised (Friday)
+        socrata_id_prelim = "mpgq-jmmr",   # NHSN HRD, preliminary (Wednesday)
+        # "totalconfc19newadm", not "...covidnewadm": NHSN abbreviates COVID-19
+        # as c19 throughout this dataset. The old name matched no column, so the
+        # preliminary merge silently returned nothing from the initial commit on.
+        socrata_col      = "totalconfc19newadm",
         delphi_source    = "nhsn",
         delphi_signal    = "confirmed_admissions_covid_ew",
         default_models   = [
@@ -579,6 +588,60 @@ def load_locations(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
 # ── Truth / observed data ──────────────────────────────────────────────────────
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def _socrata_last_updated(dataset_id: str) -> Optional[pd.Timestamp]:
+    """When CDC last changed the rows of a Socrata dataset.
+
+    This is the publisher's own timestamp, not our fetch time, so it answers
+    "is there newer data than this?" rather than "when did the cache refresh?".
+    """
+    try:
+        r = requests.get(f"https://data.cdc.gov/api/views/{dataset_id}.json",
+                         timeout=15)
+        if r.status_code != 200:
+            return None
+        ts = r.json().get("rowsUpdatedAt")
+        return pd.to_datetime(ts, unit="s") if ts else None
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _github_file_last_commit(api_base: str, path: str) -> Optional[pd.Timestamp]:
+    """Commit date of the newest change to one file in a hub repo."""
+    repo = api_base.rsplit("/contents", 1)[0]
+    try:
+        r = _github_get(f"{repo}/commits", params={"path": path, "per_page": "1"},
+                        timeout=15)
+        if r.status_code != 200:
+            return None
+        payload = r.json()
+        if not payload:
+            return None
+        when = payload[0]["commit"]["committer"]["date"]
+        return pd.to_datetime(when).tz_localize(None)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def observed_last_updated(hub_label: str) -> Optional[pd.Timestamp]:
+    """When the observed series this hub shows was last republished upstream.
+
+    The series is a merge of the hub's target file (GitHub) and, for most hubs,
+    CDC's preliminary feed (Socrata), so the answer is the later of the two.
+    Deliberately not our own fetch time: that only ever says "within the last
+    hour", which tells the user nothing about staleness of the data itself.
+    """
+    hub = HUB_CONFIGS[hub_label]
+    stamps = [_github_file_last_commit(hub.api_base, hub.truth_file)]
+    for dataset_id in (hub.socrata_id, hub.socrata_id_prelim):
+        if dataset_id:
+            stamps.append(_socrata_last_updated(dataset_id))
+    stamps = [t for t in stamps if t is not None]
+    return max(stamps) if stamps else None
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_truth_data(hub_label: str = "Flu Hospitalizations") -> pd.DataFrame:
     """
     Returns observed data for the given hub.
@@ -704,47 +767,81 @@ def _load_preliminary_nssp(hub: HubConfig, silent: bool = False) -> pd.DataFrame
     return raw.sort_values(["date", "location"]).reset_index(drop=True)
 
 
-def _load_preliminary_nhsn(hub: HubConfig, silent: bool = False) -> pd.DataFrame:
-    if not hub.socrata_id or not hub.socrata_col:
-        return pd.DataFrame()
+@st.cache_data(ttl=3600, show_spinner=False)
+def _nhsn_weekly(dataset_id: str, value_col: str, hub_label: str) -> pd.DataFrame:
+    """One NHSN HRD dataset reduced to [date, location, value].
+
+    Cached per (dataset, column) so the preliminary and revised releases are
+    fetched once each per hour even though two hubs read them.
+    """
     try:
         from sodapy import Socrata
         client = Socrata("data.cdc.gov", _socrata_app_token())
-        # Measured: requesting the full row took 92s against 1.4s for the NSSP
-        # feed, which selects server-side. This dataset is very wide and only
-        # three of its columns are ever used, so select them and let Socrata
-        # drop the rest before it serialises anything.
-        with _timed(f"socrata nhsn [{hub.label}]"):
+        # Measured: requesting the full row took 92s against 1.4s with a
+        # server-side select. The dataset is 322 columns wide and only three
+        # are ever used, so let Socrata drop the rest before serialising.
+        with _timed(f"socrata nhsn [{dataset_id} {value_col}]"):
             results = client.get(
-                hub.socrata_id,
-                select=f"weekendingdate,jurisdiction,{hub.socrata_col}",
+                dataset_id,
+                select=f"weekendingdate,jurisdiction,{value_col}",
                 limit=100_000,
             )
-        with _timed(f"socrata nhsn -> DataFrame [{hub.label}]"):
-            raw = pd.DataFrame.from_records(results)
-    except Exception as e:
-        if not silent:
-            st.warning(f"Could not load preliminary NHSN data: {e}")
+        raw = pd.DataFrame.from_records(results)
+    except Exception:
         return pd.DataFrame()
 
-    needed_cols = ["weekendingdate", "jurisdiction", hub.socrata_col]
-    missing = [c for c in needed_cols if c not in raw.columns]
-    if missing:
+    needed = ["weekendingdate", "jurisdiction", value_col]
+    if raw.empty or any(c not in raw.columns for c in needed):
         return pd.DataFrame()
 
-    raw = raw[needed_cols].copy()
-    raw["date"]  = pd.to_datetime(raw["weekendingdate"])
-    raw["value"] = pd.to_numeric(raw[hub.socrata_col], errors="coerce").fillna(0).astype(int)
+    raw = raw[needed].copy()
+    raw["date"]  = pd.to_datetime(raw["weekendingdate"], errors="coerce")
+    raw["value"] = pd.to_numeric(raw[value_col], errors="coerce")
     raw["jurisdiction"] = raw["jurisdiction"].apply(lambda x: "US" if x == "USA" else x)
 
-    locs = load_locations(hub.label)
+    locs = load_locations(hub_label)
     if "abbreviation" not in locs.columns:
         return pd.DataFrame()
     raw = raw.merge(locs[["abbreviation", "location"]], left_on="jurisdiction",
                     right_on="abbreviation", how="left")
-    raw = raw[["date", "location", "value"]].dropna(subset=["location"])
+    # dropna on value as well as location: a week present in the release but
+    # not yet reported must not become a zero, which would read as a collapse.
+    raw = raw[["date", "location", "value"]].dropna()
     raw["location"] = raw["location"].astype(str).apply(_normalize_fips)
-    return raw.sort_values("date").reset_index(drop=True)
+    raw["value"] = raw["value"].round().astype(int)
+    return raw.sort_values(["date", "location"]).reset_index(drop=True)
+
+
+def _load_preliminary_nhsn(hub: HubConfig, silent: bool = False) -> pd.DataFrame:
+    """Both NHSN releases, revised values winning week by week.
+
+    NHSN publishes preliminary numbers on Wednesday and revised ones on Friday.
+    Taking one release wholesale would mean either waiting until Friday for a
+    new week or never seeing the correction, so both are read and deduplicated
+    per (week, location) with the revised release first. A week only the
+    preliminary release has is therefore shown on Wednesday, and replaced by
+    the revised figure when Friday's release lands.
+    """
+    if not hub.socrata_col:
+        return pd.DataFrame()
+
+    frames = []
+    # Order matters: revised first, so keep="first" below prefers it.
+    for dataset_id in (hub.socrata_id, hub.socrata_id_prelim):
+        if not dataset_id:
+            continue
+        df = _nhsn_weekly(dataset_id, hub.socrata_col, hub.label)
+        if not df.empty:
+            frames.append(df)
+
+    if not frames:
+        if not silent:
+            st.warning("Could not load preliminary NHSN data.")
+        return pd.DataFrame()
+
+    out = pd.concat(frames, ignore_index=True)
+    out = out.drop_duplicates(subset=["date", "location"], keep="first")
+    return out.sort_values(["date", "location"]).reset_index(drop=True)
 
 
 # ── Model / date discovery ─────────────────────────────────────────────────────
