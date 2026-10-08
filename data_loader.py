@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Optional
 
@@ -24,6 +24,11 @@ import requests
 import streamlit as st
 
 # ── Constants ──────────────────────────────────────────────────────────────────
+
+# Hubs accept either format and teams have begun switching mid-season, so both
+# are discovered and read. Order matters only for the fallback probe in
+# _forecast_source(), where the commoner format is tried first.
+_FORECAST_EXTS = (".csv", ".parquet")
 
 DISK_CACHE_DIR = Path.home() / ".flusight_cache"
 MAX_WORKERS    = 8
@@ -875,9 +880,13 @@ def _repo_tree(repo: str, branch: str) -> Optional[list[dict]]:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _model_output_index(hub_label: str) -> Optional[dict[str, list[str]]]:
+def _model_output_index(hub_label: str) -> Optional[dict[str, dict[str, str]]]:
     """
-    Map {model: [forecast date, ...]} for a hub in a single API request.
+    Map {model: {forecast date: filename}} for a hub in a single API request.
+
+    The filename is kept, not just the date: teams may submit either CSV or
+    parquet, and some have begun switching mid-season, so the extension has to
+    be read off the repo rather than assumed.
 
     The contents API costs one request per model directory — around 110 across
     the four hubs, which on its own exceeds the 60 req/hour unauthenticated
@@ -894,7 +903,7 @@ def _model_output_index(hub_label: str) -> Optional[dict[str, list[str]]]:
     if tree is None:
         return None
 
-    index: dict[str, set[str]] = {}
+    index: dict[str, dict[str, str]] = {}
     for item in tree:
         if item.get("type") != "blob":
             continue
@@ -902,12 +911,15 @@ def _model_output_index(hub_label: str) -> Optional[dict[str, list[str]]]:
         if len(parts) != 3 or parts[0] != "model-output":
             continue
         model, name = parts[1], parts[2]
-        if name.endswith(".csv") and len(name) >= 10:
-            index.setdefault(model, set()).add(name[:10])
+        if name.endswith(_FORECAST_EXTS) and len(name) >= 10:
+            # A team that posts both formats for one date is assumed to mean
+            # the same forecast; parquet wins only if it sorts later, which is
+            # arbitrary but stable. In practice only one file exists per date.
+            index.setdefault(model, {})[name[:10]] = name
 
     if not index:
         return None
-    return {model: sorted(dates) for model, dates in index.items()}
+    return index
 
 
 # ── Precomputed scores ─────────────────────────────────────────────────────────
@@ -1020,7 +1032,7 @@ def get_model_dates(hub_label: str, model: str) -> list[str]:
             dates = []
             for item in r.json():
                 name = item.get("name", "")
-                if name.endswith(".csv") and len(name) >= 10:
+                if name.endswith(_FORECAST_EXTS) and len(name) >= 10:
                     dates.append(name[:10])
             return sorted(set(dates))
     except Exception:
@@ -1033,9 +1045,9 @@ def get_all_available_dates(hub_label: str, models: list[str]) -> list[str]:
     if index is not None:
         wanted = set(models)
         dates: set[str] = set()
-        for model, model_dates in index.items():
+        for model, by_date in index.items():
             if model in wanted:
-                dates.update(model_dates)
+                dates.update(by_date.keys())
         return sorted(dates)
 
     all_dates: set[str] = set()
@@ -1050,11 +1062,24 @@ def _disk_cache_path(hub: HubConfig, model: str, date_str: str) -> Path:
     return DISK_CACHE_DIR / hub.cache_dir / model / f"{date_str}.parquet"
 
 
+class _ForecastUnavailable(Exception):
+    """Raised inside the cached fetch so a failed fetch is never cached.
+
+    This cache has ttl=None, so returning an empty frame on a 404 pinned that
+    emptiness for the life of the process. On a Wednesday that is routine: some
+    teams post early, the date appears in the picker as soon as any model has a
+    file, and a fetch of the ensemble before it lands would 404 — after which
+    the ensemble stayed invisible until the app restarted, even once the file
+    was published. Streamlit does not cache exceptions, so raising here means
+    the next interaction retries.
+    """
+
+
 @st.cache_data(ttl=None, show_spinner=False)
-def fetch_forecast(hub_label: str, model: str, date_str: str) -> pd.DataFrame:
+def _fetch_forecast_cached(hub_label: str, model: str, date_str: str) -> pd.DataFrame:
     """
     Fetch quantile forecasts — disk cache first, then GitHub.
-    Returns empty DataFrame on failure.
+    Raises _ForecastUnavailable when the file could not be retrieved.
     """
     hub = HUB_CONFIGS[hub_label]
     cache_path = _disk_cache_path(hub, model, date_str)
@@ -1065,19 +1090,56 @@ def fetch_forecast(hub_label: str, model: str, date_str: str) -> pd.DataFrame:
         except Exception:
             cache_path.unlink(missing_ok=True)
 
-    url = f"{hub.raw_base}/model-output/{model}/{date_str}-{model}.csv"
-    try:
-        r = _github_get(url, timeout=20)
-        if r.status_code != 200:
-            return pd.DataFrame()
-        df = pd.read_csv(StringIO(r.text), dtype={"location": str})
-    except Exception:
-        return pd.DataFrame()
+    # Prefer the filename the repo index actually holds; fall back to probing
+    # both extensions when the index is unavailable (rate limit, truncated tree).
+    names = []
+    index = _model_output_index(hub_label)
+    if index:
+        indexed = index.get(model, {}).get(date_str)
+        if indexed:
+            names.append(indexed)
+    if not names:
+        names = [f"{date_str}-{model}{ext}" for ext in _FORECAST_EXTS]
 
-    # Filter to the target and quantile output type for this hub
+    r = None
+    last_status = None
+    for name in names:
+        url = f"{hub.raw_base}/model-output/{model}/{name}"
+        try:
+            resp = _github_get(url, timeout=20)
+        except Exception as e:
+            raise _ForecastUnavailable(f"{model} {date_str}: {type(e).__name__}")
+        if resp.status_code == 200:
+            r, fname = resp, name
+            break
+        last_status = resp.status_code
+    if r is None:
+        raise _ForecastUnavailable(f"{model} {date_str}: HTTP {last_status}")
+
+    try:
+        if fname.endswith(".parquet"):
+            df = pd.read_parquet(BytesIO(r.content))
+            if "location" in df.columns:
+                df["location"] = df["location"].astype(str)
+        else:
+            df = pd.read_csv(StringIO(r.text), dtype={"location": str})
+    except Exception:
+        raise _ForecastUnavailable(
+            f"{model} {date_str}: could not parse {fname.rsplit('.', 1)[-1]}")
+
+    required = {"output_type", "target", "output_type_id", "value"}
+    if not required.issubset(df.columns):
+        raise _ForecastUnavailable(
+            f"{model} {date_str}: missing columns "
+            f"{sorted(required - set(df.columns))}")
+
+    # Quantiles only. A submission may carry sample trajectories alongside (or
+    # instead of) quantiles; those share the file but have a non-numeric
+    # output_type_id and a different row meaning, so they are dropped here
+    # rather than being coerced to NaN further down.
     df = df[
-        (df["output_type"] == "quantile") &
-        (df["target"] == hub.target)
+        (df["output_type"].astype(str) == "quantile") &
+        (df["target"].astype(str) == hub.target)
     ].copy()
 
     if df.empty:
@@ -1092,13 +1154,28 @@ def fetch_forecast(hub_label: str, model: str, date_str: str) -> pd.DataFrame:
     df["value"]           = pd.to_numeric(df["value"], errors="coerce")
     df = df.dropna(subset=["output_type_id", "value"])
 
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
     try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(cache_path, index=False)
     except Exception:
         pass
 
     return df
+
+
+def fetch_forecast(hub_label: str, model: str, date_str: str) -> pd.DataFrame:
+    """Public entry point: empty frame on failure, and failures are retried.
+
+    Deliberately uncached — the cache sits on the inner function so a published
+    forecast is memoised forever (the file never changes) while a miss is tried
+    again on the next interaction.
+    """
+    try:
+        return _fetch_forecast_cached(hub_label, model, date_str)
+    except _ForecastUnavailable:
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
 
 
 def load_forecasts_for_selection(
