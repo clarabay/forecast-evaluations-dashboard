@@ -742,14 +742,28 @@ def render_hub(selected_hub_label: str) -> None:
             # Multiselect rather than a radio because the bands nest, so
             # "50% and 98% but not 90%" is a reasonable thing to want, and
             # clearing it to medians only is the case this mainly exists for.
-            pi_levels = st.multiselect(
+            # The disabled state is read from session state rather than from the
+            # checkbox below, which has not been rendered yet this run. Streamlit
+            # reruns when it is toggled, so the value is never more than one run
+            # stale, and this keeps the checkbox under the control it modifies.
+            _median_only = st.session_state.get(f"fc_median_only_{selected_hub_label}", False)
+            _pi_selected = st.multiselect(
                 "Prediction intervals",
                 options=[50, 90, 98],
                 default=[50, 90, 98],
                 format_func=lambda p: f"{p}%",
                 key=f"fc_pi_{selected_hub_label}",
                 placeholder="Median only",
+                disabled=_median_only,
             )
+            median_only = st.checkbox(
+                "Median only",
+                value=False,
+                key=f"fc_median_only_{selected_hub_label}",
+                help="Hide every interval without clearing the selection above.",
+            )
+            # Keeps the chosen intervals so unticking restores them.
+            pi_levels = [] if median_only else _pi_selected
             log_y = st.checkbox(
                 "Log scale (y-axis)",
                 value=False,
