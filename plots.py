@@ -34,6 +34,34 @@ FAN_INTERVALS = [
     (0.25, 0.75),
 ]
 
+def _clip_for_log(df: pd.DataFrame, floor: float) -> pd.DataFrame:
+    """Raise non-positive values to `floor` so a log axis can show them.
+
+    A log axis has no position for 0, and plotly silently drops those points,
+    which leaves gaps that read as missing data rather than as zero weeks.
+    Clipping to 1 puts them at log(1) = 0, the natural baseline for counts.
+    """
+    if df is None or df.empty or "value" not in df.columns:
+        return df
+    out = df.copy()
+    out["value"] = out["value"].clip(lower=floor)
+    return out
+
+
+def _intervals_for(levels: list[int] | None) -> list[tuple[float, float]]:
+    """The (low, high) quantile pairs for the interval levels a caller wants.
+
+    None means every band, which keeps existing callers unchanged; an empty
+    list means median only. Order is preserved from FAN_INTERVALS so the widest
+    band is still drawn first and the narrower ones sit on top of it.
+    """
+    if levels is None:
+        return FAN_INTERVALS
+    wanted = set(levels)
+    return [(lo, hi) for lo, hi in FAN_INTERVALS
+            if int(round((hi - lo) * 100)) in wanted]
+
+
 def _fan_alpha(q_lo: float, q_hi: float) -> float:
     """Notebook formula: 0.5*(1-interval_range) + 0.1"""
     interval_range = q_hi - q_lo
@@ -82,14 +110,23 @@ def build_fan_chart(
     y_label: str = "Weekly Admissions",
     asof_observed: pd.DataFrame | None = None,
     asof_label: str = "",
+    pi_levels: list[int] | None = None,
+    log_y: bool = False,
+    log_floor: float = 1.0,
 ) -> go.Figure:
     """
     Single-location fan chart for one reference date.
-    Shows 98%, 90%, 50% PI bands + median (teal).
+    Shows the requested PI bands (98/90/50 by default) plus the median.
+    pi_levels=[] draws medians only.
     Observed data: black line+dots up to ref_date, dashed line+open circles after.
     obs_weeks: how many weeks of history to show before ref_date (default 13 = ~3 months).
     """
     fig = go.Figure()
+
+    if log_y:
+        observed      = _clip_for_log(observed, log_floor)
+        forecasts     = _clip_for_log(forecasts, log_floor)
+        asof_observed = _clip_for_log(asof_observed, log_floor)
 
     ref_ts = pd.Timestamp(ref_date)
 
@@ -176,8 +213,10 @@ def build_fan_chart(
             hoverinfo="skip",
         ))
 
+    intervals = _intervals_for(pi_levels)
+
     # Legend entries for PI bands (neutral gray, shown once)
-    for q_lo, q_hi in FAN_INTERVALS:
+    for q_lo, q_hi in intervals:
         interval_pct = int(round((q_hi - q_lo) * 100))
         alpha = _fan_alpha(q_lo, q_hi)
         fig.add_trace(go.Scatter(
@@ -210,7 +249,7 @@ def build_fan_chart(
         )
         dates_x = wide.index.tolist()
 
-        for q_lo, q_hi in FAN_INTERVALS:
+        for q_lo, q_hi in intervals:
             if q_lo not in wide.columns or q_hi not in wide.columns:
                 continue
             lo = wide[q_lo].values
@@ -257,7 +296,11 @@ def build_fan_chart(
         **_BASE_LAYOUT,
         title=dict(text=f"{y_label} — {location_name}", x=0.0, xanchor="left"),
         xaxis=dict(title="Date", showgrid=False, linecolor="#cccccc", ticks="outside"),
-        yaxis=dict(title=y_label, showgrid=True, gridcolor="#eeeeee", linecolor="#cccccc"),
+        # type="log" plots log10 of the value. Plotly drops non-positive points
+        # on a log axis, which is the right behaviour here: a zero-admission
+        # week has no position on it, and forcing one would invent data.
+        yaxis=dict(title=y_label, showgrid=True, gridcolor="#eeeeee",
+                   linecolor="#cccccc", type="log" if log_y else "linear"),
         hovermode="x unified",
         legend=dict(bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1),
         margin=dict(l=65, r=30, t=70, b=55),
@@ -274,9 +317,14 @@ def build_observed_chart(
     y_label: str = "Weekly Admissions",
     asof_observed: pd.DataFrame | None = None,
     asof_label: str = "",
+    log_y: bool = False,
+    log_floor: float = 1.0,
 ) -> go.Figure:
     """Observed data only — no forecasts."""
     fig = go.Figure()
+    if log_y:
+        observed      = _clip_for_log(observed, log_floor)
+        asof_observed = _clip_for_log(asof_observed, log_floor)
     # Window back from the most recent observation rather than from today, so the
     # view always lands on the latest available data. Anchoring to today meant a
     # target whose reporting lags — flu and metrocast both trail by over a month
@@ -320,7 +368,11 @@ def build_observed_chart(
         **_BASE_LAYOUT,
         title=dict(text=f"{y_label} — {location_name}", x=0.0, xanchor="left"),
         xaxis=dict(title="Date", showgrid=False, linecolor="#cccccc", ticks="outside"),
-        yaxis=dict(title=y_label, showgrid=True, gridcolor="#eeeeee", linecolor="#cccccc"),
+        # type="log" plots log10 of the value. Plotly drops non-positive points
+        # on a log axis, which is the right behaviour here: a zero-admission
+        # week has no position on it, and forcing one would invent data.
+        yaxis=dict(title=y_label, showgrid=True, gridcolor="#eeeeee",
+                   linecolor="#cccccc", type="log" if log_y else "linear"),
         hovermode="x unified",
         legend=dict(bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1),
         margin=dict(l=65, r=30, t=70, b=55),
@@ -434,6 +486,7 @@ def build_all_states_panel(
     selected_models: list[str],
     ref_date: str,
     obs_weeks: int = 13,
+    pi_levels: list[int] | None = None,
 ) -> go.Figure:
     """
     Small-multiple fan charts for all locations. US first, then locations sorted by state/name.
@@ -544,7 +597,7 @@ def build_all_states_panel(
             )
             dates_x = wide.index.tolist()
 
-            for q_lo, q_hi in FAN_INTERVALS:
+            for q_lo, q_hi in _intervals_for(pi_levels):
                 if q_lo not in wide.columns or q_hi not in wide.columns:
                     continue
                 alpha = _fan_alpha(q_lo, q_hi)

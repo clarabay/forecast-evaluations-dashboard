@@ -736,6 +736,34 @@ def render_hub(selected_hub_label: str) -> None:
                 else:
                     show_asof = False
 
+            # Its own row: added to row 1 this truncated the date select to an
+            # ellipsis, and to row 2 it broke the radio labels beside it onto
+            # one word per line. Full width here fits the chips on one line.
+            # Multiselect rather than a radio because the bands nest, so
+            # "50% and 98% but not 90%" is a reasonable thing to want, and
+            # clearing it to medians only is the case this mainly exists for.
+            pi_levels = st.multiselect(
+                "Prediction intervals",
+                options=[50, 90, 98],
+                default=[50, 90, 98],
+                format_func=lambda p: f"{p}%",
+                key=f"fc_pi_{selected_hub_label}",
+                placeholder="Median only",
+            )
+            log_y = st.checkbox(
+                "Log scale (y-axis)",
+                value=False,
+                key=f"fc_logy_{selected_hub_label}",
+            )
+
+        # Zeros have no place on a log axis, so they are raised to this floor.
+        # For admission counts the smallest real value is 1, which is log(1)=0 —
+        # the natural baseline. The ED-visit and metrocast targets are
+        # proportions and percentages, where a floor of 1 would sit above the
+        # whole series, so the smallest positive observation is used instead.
+        _pos = truth_df.loc[truth_df["value"] > 0, "value"] if not truth_df.empty else None
+        log_floor = 1.0 if _pos is None or _pos.empty else min(1.0, float(_pos.min()))
+
         asof_df, asof_label = pd.DataFrame(), ""
         if show_asof:
             with st.spinner("Loading data vintage…"):
@@ -813,6 +841,8 @@ def render_hub(selected_hub_label: str) -> None:
                     y_label=hub.y_label,
                     asof_observed=asof_df,
                     asof_label=asof_label,
+                    log_y=log_y,
+                    log_floor=log_floor,
                 )
                 st.plotly_chart(obs_fig, use_container_width=True, config={"displayModeBar": False})
             else:
@@ -832,6 +862,8 @@ def render_hub(selected_hub_label: str) -> None:
                     location_name=selected_loc_name,
                     obs_weeks=obs_weeks,
                     y_label=hub.y_label,
+                    log_y=log_y,
+                    log_floor=log_floor,
                 )
                 st.plotly_chart(obs_fig, use_container_width=True, config={"displayModeBar": False})
             else:
@@ -873,6 +905,8 @@ def render_hub(selected_hub_label: str) -> None:
                         location_name=selected_loc_name,
                         obs_weeks=obs_weeks,
                         y_label=hub.y_label,
+                        log_y=log_y,
+                        log_floor=log_floor,
                     )
                     st.plotly_chart(obs_fig, use_container_width=True, config={"displayModeBar": False})
                 else:
@@ -888,6 +922,9 @@ def render_hub(selected_hub_label: str) -> None:
                             y_label=hub.y_label,
                             asof_observed=asof_df,
                             asof_label=asof_label,
+                            pi_levels=pi_levels,
+                            log_y=log_y,
+                            log_floor=log_floor,
                         )
                         st.plotly_chart(fan_fig, use_container_width=True, config={"displayModeBar": False})
                     else:
@@ -899,6 +936,7 @@ def render_hub(selected_hub_label: str) -> None:
                                 selected_models=selected_models,
                                 ref_date=selected_forecast_date,
                                 obs_weeks=obs_weeks,
+                                pi_levels=pi_levels,
                             )
                         st.plotly_chart(panel_fig, use_container_width=True, config={"displayModeBar": False})
 
