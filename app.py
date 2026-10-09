@@ -763,9 +763,13 @@ def render_hub(selected_hub_label: str) -> None:
             # been rendered yet this run. Streamlit reruns on toggle, so the
             # value is never more than one run stale.
             _median_only = st.session_state.get(f"fc_median_only_{selected_hub_label}", False)
-            # Three equal columns spread the boxes across the whole control
-            # width; a trailing spacer keeps them grouped at the left instead.
-            _pi_cols = st.columns([1, 1, 1, 2.6], gap="small")
+            # All four on one row. Equal columns would spread them across the
+            # whole control width, so the three band boxes get just enough for
+            # their labels, "Median only" a wider one, and the slack goes to a
+            # trailing spacer where it does not show.
+            # Widths are near the wrap point: below roughly 60px a band column
+            # breaks "50%" onto two lines, so these are set just above it.
+            _pi_cols = st.columns([1.2, 1.2, 1.2, 2.6, 0.8], gap="small")
             pi_levels = [
                 lvl for i, lvl in enumerate((50, 90, 98))
                 if _pi_cols[i].checkbox(
@@ -775,11 +779,11 @@ def render_hub(selected_hub_label: str) -> None:
                     disabled=_median_only,
                 )
             ]
-            median_only = st.checkbox(
+            median_only = _pi_cols[3].checkbox(
                 "Median only",
                 value=False,
                 key=f"fc_median_only_{selected_hub_label}",
-                help="Hide every interval without clearing the selection above.",
+                help="Hide every interval without clearing the selection.",
             )
             if median_only:
                 pi_levels = []
