@@ -763,7 +763,9 @@ def render_hub(selected_hub_label: str) -> None:
             # been rendered yet this run. Streamlit reruns on toggle, so the
             # value is never more than one run stale.
             _median_only = st.session_state.get(f"fc_median_only_{selected_hub_label}", False)
-            _pi_cols = st.columns(3)
+            # Three equal columns spread the boxes across the whole control
+            # width; a trailing spacer keeps them grouped at the left instead.
+            _pi_cols = st.columns([1, 1, 1, 2.6], gap="small")
             pi_levels = [
                 lvl for i, lvl in enumerate((50, 90, 98))
                 if _pi_cols[i].checkbox(
