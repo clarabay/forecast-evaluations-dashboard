@@ -182,7 +182,7 @@ def build_fan_chart(
             line=dict(color="#111111", width=1.8),
             marker=dict(size=4, color="#111111"),
             legendgroup="observed",
-            hovertemplate="<b>Observed</b><br>%{x|%b %d, %Y}: %{y:,.3g}<extra></extra>",
+            hovertemplate="<b>Observed</b><br>%{x|%b %d, %Y}: %{y:,}<extra></extra>",
         ))
 
     # Dashed line anchored to last historical point + open circle markers for post-forecast
@@ -199,7 +199,7 @@ def build_fan_chart(
             line=dict(color="#111111", width=1.8, dash="dash"),
             showlegend=True,
             legendgroup="observed_post",
-            hovertemplate="<b>Observed (post-forecast)</b><br>%{x|%b %d, %Y}: %{y:,.3g}<extra></extra>",
+            hovertemplate="<b>Observed (post-forecast)</b><br>%{x|%b %d, %Y}: %{y:,}<extra></extra>",
         ))
         # Open circle markers only on actual post-forecast points (not the junction)
         fig.add_trace(go.Scatter(
@@ -286,7 +286,7 @@ def build_fan_chart(
                 hovertemplate=(
                     f"<b>{model}</b><br>"
                     "%{x|%b %d}<br>"
-                    "Median: %{y:,.3g}<br>"
+                    "Median: %{y:,}<br>"
                     "90% PI: %{customdata[0]:,.0f} – %{customdata[1]:,.0f}"
                     "<extra></extra>"
                 ),
@@ -301,7 +301,11 @@ def build_fan_chart(
         # week has no position on it, and forcing one would invent data.
         yaxis=dict(title=y_label, showgrid=True, gridcolor="#eeeeee",
                    linecolor="#cccccc", type="log" if log_y else "linear"),
-        hovermode="x unified",
+        # "closest" rather than "x unified": with several models plotted, the
+        # unified box stacked every series at that date into one tall tooltip.
+        # Each median trace already carries its own model name, median and 90%
+        # PI, so snapping to the hovered line shows just that model.
+        hovermode="closest",
         legend=dict(bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1),
         margin=dict(l=65, r=30, t=70, b=55),
         height=480,
@@ -362,7 +366,7 @@ def build_observed_chart(
             name="Observed",
             line=dict(color="#111111", width=1.8),
             marker=dict(size=4, color="#111111"),
-            hovertemplate="<b>Observed</b><br>%{x|%b %d, %Y}: %{y:,.3g}<extra></extra>",
+            hovertemplate="<b>Observed</b><br>%{x|%b %d, %Y}: %{y:,}<extra></extra>",
         ))
     fig.update_layout(
         **_BASE_LAYOUT,
@@ -458,10 +462,11 @@ def build_all_states_observed(
                 marker=dict(size=2, color="#111111"),
                 showlegend=False,
                 # The panels carry no axis labels, so the hover has to name the
-                # location itself. ",.4~g" keeps counts readable (1,964) without
-                # mangling proportions (0.0031).
+                # location itself. The "," format keeps counts readable (1,964)
+                # without mangling proportions (0.0031); a "g" precision would
+                # flip to exponential once the exponent reached it (9.35e+3).
                 hovertemplate=(f"<b>{name}</b><br>%{{x|%b %d, %Y}}"
-                               "<br>%{y:,.4~g}<extra></extra>"),
+                               "<br>%{y:,}<extra></extra>"),
             ), row=row, col=col)
 
     fig.update_xaxes(showticklabels=False, showgrid=False, linecolor="#dddddd", showline=True)
@@ -552,7 +557,7 @@ def build_all_states_panel(
                 showlegend=False,
                 legendgroup="observed",
                 hovertemplate=(f"<b>{panel_name}</b><br>%{{x|%b %d, %Y}}"
-                               "<br>Observed %{y:,.4~g}<extra></extra>"),
+                               "<br>Observed %{y:,}<extra></extra>"),
             ), **rc)
 
         if not obs_post.empty:
@@ -576,7 +581,7 @@ def build_all_states_panel(
                 showlegend=False,
                 legendgroup="observed_post",
                 hovertemplate=(f"<b>{panel_name}</b><br>%{{x|%b %d, %Y}}"
-                               "<br>Observed %{y:,.4~g} (after forecast)<extra></extra>"),
+                               "<br>Observed %{y:,} (after forecast)<extra></extra>"),
             ), **rc)
 
         fc_loc = forecasts[
@@ -627,7 +632,7 @@ def build_all_states_panel(
                     showlegend=show_leg,
                     legendgroup=model,
                     hovertemplate=(f"<b>{panel_name}</b><br>%{{x|%b %d, %Y}}"
-                                   f"<br>{model} median %{{y:,.4~g}}<extra></extra>"),
+                                   f"<br>{model} median %{{y:,}}<extra></extra>"),
                 ), **rc)
 
     fig.update_xaxes(showticklabels=False, showgrid=False, linecolor="#dddddd", showline=True)
