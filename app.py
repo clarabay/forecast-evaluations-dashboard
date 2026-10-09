@@ -191,6 +191,13 @@ h5 {
 .ack a { color: #17B1BF; text-decoration: none; }
 .ack a:hover { text-decoration: underline; }
 .ack-logos { margin-top: 12px; }
+/* Group label for the checkbox row that replaced the interval multiselect.
+   Matches Streamlit's own widget labels, which a bare markdown line does not. */
+.ctrl-label {
+    font-size: 0.875rem;
+    color: rgb(49, 51, 63);
+    margin-bottom: -6px;
+}
 footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -736,39 +743,44 @@ def render_hub(selected_hub_label: str) -> None:
                 else:
                     show_asof = False
 
-            # Its own row: added to row 1 this truncated the date select to an
-            # ellipsis, and to row 2 it broke the radio labels beside it onto
-            # one word per line. Full width here fits the chips on one line.
-            # Multiselect rather than a radio because the bands nest, so
-            # "50% and 98% but not 90%" is a reasonable thing to want, and
-            # clearing it to medians only is the case this mainly exists for.
-            # The disabled state is read from session state rather than from the
-            # checkbox below, which has not been rendered yet this run. Streamlit
-            # reruns when it is toggled, so the value is never more than one run
-            # stale, and this keeps the checkbox under the control it modifies.
+                # Outside the branch above: metrocast has no vintage feed, so the
+                # as-of checkbox never renders there, but log scale still applies.
+                log_y = st.checkbox(
+                    "Log scale (y-axis)",
+                    value=False,
+                    key=f"fc_logy_{selected_hub_label}",
+                )
+
+            # Checkboxes rather than a chip multiselect so this matches the rest
+            # of the panel, which is radios and checkboxes throughout. One per
+            # band because they nest: "50% and 98% but not 90%" is reasonable.
+            # "Median only" stays a separate box because unticking three to get
+            # there was the complaint that prompted it; it greys the three out
+            # rather than clearing them, so unticking restores the selection.
+            st.markdown("<div class='ctrl-label'>Prediction intervals</div>",
+                        unsafe_allow_html=True)
+            # Read from session state, not from the widget below, which has not
+            # been rendered yet this run. Streamlit reruns on toggle, so the
+            # value is never more than one run stale.
             _median_only = st.session_state.get(f"fc_median_only_{selected_hub_label}", False)
-            _pi_selected = st.multiselect(
-                "Prediction intervals",
-                options=[50, 90, 98],
-                default=[50, 90, 98],
-                format_func=lambda p: f"{p}%",
-                key=f"fc_pi_{selected_hub_label}",
-                placeholder="Median only",
-                disabled=_median_only,
-            )
+            _pi_cols = st.columns(3)
+            pi_levels = [
+                lvl for i, lvl in enumerate((50, 90, 98))
+                if _pi_cols[i].checkbox(
+                    f"{lvl}%",
+                    value=True,
+                    key=f"fc_pi{lvl}_{selected_hub_label}",
+                    disabled=_median_only,
+                )
+            ]
             median_only = st.checkbox(
                 "Median only",
                 value=False,
                 key=f"fc_median_only_{selected_hub_label}",
                 help="Hide every interval without clearing the selection above.",
             )
-            # Keeps the chosen intervals so unticking restores them.
-            pi_levels = [] if median_only else _pi_selected
-            log_y = st.checkbox(
-                "Log scale (y-axis)",
-                value=False,
-                key=f"fc_logy_{selected_hub_label}",
-            )
+            if median_only:
+                pi_levels = []
 
         # Zeros have no place on a log axis, so they are raised to this floor.
         # For admission counts the smallest real value is 1, which is log(1)=0 —
