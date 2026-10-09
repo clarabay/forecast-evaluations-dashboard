@@ -198,6 +198,17 @@ h5 {
     color: rgb(49, 51, 63);
     margin-bottom: -6px;
 }
+/* Interval checkboxes: size each column to its label rather than to an equal
+   share of the row, so they pack like the horizontal radio above them. */
+div[class*="st-key-pirow_"] [data-testid="stHorizontalBlock"] {
+    gap: 0.9rem;
+    flex-wrap: nowrap;
+}
+div[class*="st-key-pirow_"] [data-testid="stColumn"] {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+}
 footer { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -763,13 +774,13 @@ def render_hub(selected_hub_label: str) -> None:
             # been rendered yet this run. Streamlit reruns on toggle, so the
             # value is never more than one run stale.
             _median_only = st.session_state.get(f"fc_median_only_{selected_hub_label}", False)
-            # All four on one row. Equal columns would spread them across the
-            # whole control width, so the three band boxes get just enough for
-            # their labels, "Median only" a wider one, and the slack goes to a
-            # trailing spacer where it does not show.
-            # Widths are near the wrap point: below roughly 60px a band column
-            # breaks "50%" onto two lines, so these are set just above it.
-            _pi_cols = st.columns([1.2, 1.2, 1.2, 2.6, 0.8], gap="small")
+            # st.columns gives every column an equal share of the row, so the
+            # boxes sat as far apart as the row is wide however the weights were
+            # tuned. The CSS on .st-key-pirow (see the style block) makes these
+            # columns shrink to their labels instead, which is how the
+            # horizontal radio above packs its options.
+            with st.container(key=f"pirow_{selected_hub_label}"):
+                _pi_cols = st.columns(4, gap="small")
             pi_levels = [
                 lvl for i, lvl in enumerate((50, 90, 98))
                 if _pi_cols[i].checkbox(
