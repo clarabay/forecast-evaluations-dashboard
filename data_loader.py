@@ -128,10 +128,11 @@ _EPISTORM_FLU = [
     "MOBS-GLEAM_RL_FLUH",
     "NU-PGF_FLUH",
     "NU-EMBERS",
-    # Not yet in the hub's model-output directory; listed so it is picked up
-    # automatically on its first submission. _epistorm_available() intersects
+    # Not yet in the hub's model-output directory; listed so they are picked up
+    # automatically on their first submission. _epistorm_available() intersects
     # against the live model list, so an absent name is simply ignored.
     "NU-FLARE",
+    "MOBS-GLEAM_BANDIT_FLUH",
     "MIGHTE-Base",
     "Xi_lab-GLEAM_AI",
     "Xi_lab-GLEAM_AI_hybrid",
@@ -171,6 +172,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
             "NU_UCSD-GLEAM_AI_FLUH",
             "NU-EMBERS",
             "NU-FLARE",
+            "MOBS-GLEAM_BANDIT_FLUH",
             "MIGHTE-Base",
             "Xi_lab-GLEAM_AI",
             "Xi_lab-GLEAM_AI_hybrid",

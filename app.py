@@ -1129,7 +1129,29 @@ offsets. Vintages start 2024-11-19.
                 wis_results = st.session_state.get(f"_wis_results_{selected_hub_label}", pd.DataFrame())
 
             if wis_results.empty:
-                st.warning("No forecast data or no overlapping observations for the evaluation range.")
+                # Every number on this tab is a ratio against the baseline, and
+                # add_wis_ratio inner-joins on it, so a location the baseline
+                # skipped drops out for *every* model. The generic message sent
+                # us hunting for missing forecasts when the forecasts were fine
+                # — name the real cause when the scores can prove it.
+                _msg = ("No forecast data or no overlapping observations "
+                        "for the evaluation range.")
+                if wis_location is not None and not precomputed_wis.empty:
+                    _base_rows = filter_scores(
+                        precomputed_wis,
+                        ref_dates=eval_ref_dates,
+                        models=[hub.baseline],
+                    )
+                    _base_locs = set(_base_rows["location"].astype(str))
+                    if _base_locs and str(wis_location) not in _base_locs:
+                        _msg = (
+                            f"No **{hub.baseline}** forecast covers {wis_loc_name} in "
+                            f"this range, so no WIS ratio can be computed for it — "
+                            f"every model is scored relative to that baseline. Other "
+                            f"locations are unaffected, and the Coverage tab, which "
+                            f"needs no baseline, still shows {wis_loc_name}."
+                        )
+                st.warning(_msg)
             else:
                 plot_wis = wis_results[
                     (wis_results["model"] != hub.baseline) &

@@ -5,7 +5,7 @@ name: Update precomputed scores
 # filesystem and ~1 GB of memory, and cannot commit its results anywhere.
 on:
   schedule:
-    # Thursdays 07:00 UTC — after the Wednesday forecast submissions land.
+    # Wednesdays and Fridays 13:30 UTC — after each NHSN release lands.
     - cron: "30 13 * * 3,5"
   workflow_dispatch:      # also runnable on demand from the Actions tab
 
@@ -51,16 +51,40 @@ jobs:
 
       - name: Commit if changed
         run: |
+          set -uo pipefail
           if git diff --quiet -- precomputed/; then
             echo "No score changes — nothing to commit."
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add precomputed/
-          git commit -m "Update precomputed scores ($(date -u +%Y-%m-%d))"
-          git push
-          echo "Pushed updated scores."
+
+          # The rebuild can run the best part of an hour, so the branch may have
+          # moved since checkout and a bare push then fails as a non-fast-forward
+          # (this is how the 2026-10-14 run was lost). Re-point the index at the
+          # current remote tip each attempt and stage only precomputed/, so the
+          # commit carries the new scores and nothing else, whatever else landed
+          # meanwhile. The parquet files are derived artefacts rebuilt from
+          # scratch here, so the freshly built ones always win.
+          branch="${GITHUB_REF_NAME}"
+          for attempt in 1 2 3; do
+            git fetch origin "$branch"
+            git reset --mixed "origin/$branch"
+            git add precomputed/
+            if git diff --cached --quiet; then
+              echo "Scores already match origin/$branch — nothing to push."
+              exit 0
+            fi
+            git commit -m "Update precomputed scores ($(date -u +%Y-%m-%d))"
+            if git push origin "HEAD:$branch"; then
+              echo "Pushed updated scores (attempt $attempt)."
+              exit 0
+            fi
+            echo "Push rejected on attempt $attempt — the branch moved during the run; retrying."
+            git reset --soft HEAD~1
+          done
+          echo "Could not push after 3 attempts." >&2
+          exit 1
 
       - name: Summary
         if: always()
