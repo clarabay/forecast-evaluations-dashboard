@@ -6,7 +6,7 @@ name: Update precomputed scores
 on:
   schedule:
     # Thursdays 07:00 UTC — after the Wednesday forecast submissions land.
-    - cron: "0 7 * * 4"
+    - cron: "30 13 * * 3,5"
   workflow_dispatch:      # also runnable on demand from the Actions tab
 
 permissions:
