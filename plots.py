@@ -21,6 +21,12 @@ from plotly.subplots import make_subplots
 # ── Design constants ───────────────────────────────────────────────────────────
 
 TEAL = "#17B1BF"
+# Three highlight groups on the WIS tab. Teal is the existing accent; red marks
+# the primary Epistorm submissions and dark blue the hub ensemble, which is the
+# reference everything else is read against.
+HIGHLIGHT_RED  = "#C44E52"   # muted brick; #D62728 read as harsh beside the teal
+HIGHLIGHT_TEAL = TEAL
+HIGHLIGHT_BLUE = "#1F4E99"
 
 # The "as of forecast date" observed line. Deliberately not in SET2_PALETTE,
 # so it can never be confused with a model median, and not black, so it reads
@@ -659,7 +665,7 @@ def build_all_states_panel(
 
 def build_wis_boxplots(
     wis_df: pd.DataFrame,
-    highlight_models: list[str] | None = None,
+    highlight_colors: dict[str, str] | None = None,
     log_scale: bool = False,
     by_horizon: bool = True,
     baseline_label: str = "baseline",
@@ -669,16 +675,18 @@ def build_wis_boxplots(
     When by_horizon=False: single panel aggregated across all horizons.
     Matches notebook: teal boxes at 0.1 alpha, model names as y-axis labels,
     no y-axis labels, dashed darksalmon reference line at x=1.
-    All hub models shown; highlight_models are bolded.
+    All hub models shown. highlight_colors maps a model to the colour its
+    axis label is drawn in, bold and italic; anything absent stays grey.
     """
     if wis_df.empty:
         return go.Figure()
 
-    highlight_models = set(highlight_models or [])
+    highlight_colors = dict(highlight_colors or {})
 
     def _make_ticktext(model_order):
         return [
-            f"<b><i><span style='color:{TEAL}'>{m}</span></i></b>" if m in highlight_models
+            f"<b><i><span style='color:{highlight_colors[m]}'>{m}</span></i></b>"
+            if m in highlight_colors
             else f"<span style='color:#aaaaaa'>{m}</span>"
             for m in model_order
         ]

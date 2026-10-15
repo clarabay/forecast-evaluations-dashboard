@@ -35,6 +35,9 @@ from data_loader import (
 )
 from scoring import compute_coverage, compute_wis, summarize_coverage, summarize_wis
 from plots import (
+    HIGHLIGHT_BLUE,
+    HIGHLIGHT_RED,
+    HIGHLIGHT_TEAL,
     TEAL,
     build_all_states_observed,
     build_all_states_panel,
@@ -251,6 +254,51 @@ _hub_descriptions = {
 
 
 # ── Epistorm model filter ──────────────────────────────────────────────────────
+
+# Which colour each model's label takes on the WIS tab. Presentation choices
+# rather than facts about the models, so they live here and not in HubConfig:
+# MIGHTE-Base is shown with the wider Epistorm set rather than the primary one,
+# and MIGHTE-Linear joins that set without being an Epistorm submission.
+_HIGHLIGHT_DEMOTE_TO_TEAL = {"MIGHTE-Base"}
+_HIGHLIGHT_TEAL_EXTRA     = ["MIGHTE-Linear"]
+
+
+def _highlight_groups(hub, all_models: list[str]) -> dict[str, str]:
+    """Map model -> highlight colour for the WIS boxplot and table.
+
+    Three groups, in precedence order so a model never lands in two:
+      dark blue  the hub ensemble and baseline — the two references everything
+                 else is read against
+      red        the hub's primary models, minus those two and the demoted
+      teal       the remaining Epistorm models, plus the extras above
+
+    Intersected with all_models throughout, so a name that is configured but
+    not yet submitting is simply absent rather than colouring a row that is
+    not there.
+    """
+    available = set(all_models)
+    # The baseline shares the ensemble's colour: both are references rather
+    # than entries, and the baseline sits at a ratio of 1.0 by construction.
+    blue = [m for m in (hub.ensemble_model, hub.baseline) if m and m in available]
+    blue_set = set(blue)
+
+    red = [
+        m for m in hub.default_models
+        if m in available and m not in blue_set and m not in _HIGHLIGHT_DEMOTE_TO_TEAL
+    ]
+    red_set = set(red)
+
+    teal_candidates = list(dict.fromkeys(list(hub.epistorm_models) + _HIGHLIGHT_TEAL_EXTRA))
+    teal = [
+        m for m in teal_candidates
+        if m in available and m not in red_set and m not in blue_set
+    ]
+
+    colors = {m: HIGHLIGHT_RED for m in red}
+    colors.update({m: HIGHLIGHT_TEAL for m in teal})
+    colors.update({m: HIGHLIGHT_BLUE for m in blue})
+    return colors
+
 
 def _epistorm_available(hub, all_models: list[str]) -> list[str]:
     """
@@ -1084,7 +1132,7 @@ offsets. Vintages start 2024-11-19.
         if not wis_models_shown:
             wis_models_shown = wis_models_options
 
-        wis_highlight = [m for m in hub.default_models if m in all_models]
+        wis_colors = _highlight_groups(hub, all_models)
 
         if not eval_ref_dates:
             st.info("No forecast dates in the selected evaluation range.")
@@ -1165,7 +1213,7 @@ offsets. Vintages start 2024-11-19.
                 st.markdown("##### Forecast WIS ratio")
                 wis_fig = build_wis_boxplots(
                     plot_wis,
-                    highlight_models=wis_highlight,
+                    highlight_colors=wis_colors,
                     log_scale=wis_log,
                     by_horizon=wis_by_horizon,
                     baseline_label=hub.baseline,
@@ -1184,10 +1232,9 @@ offsets. Vintages start 2024-11-19.
                     # Same models the boxplot picks out, styled to match. Number
                     # formatting moves into the Styler because column_config
                     # formats are not applied to a styled frame.
-                    _hl = set(wis_highlight)
-
                     def _style_highlight(row):
-                        css = f"color: {TEAL}; font-weight: 700" if row["Model"] in _hl else ""
+                        colour = wis_colors.get(row["Model"])
+                        css = f"color: {colour}; font-weight: 700" if colour else ""
                         return [css] * len(row)
 
                     # Constrained to the left two thirds — six narrow columns
