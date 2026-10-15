@@ -669,6 +669,9 @@ def build_wis_boxplots(
     log_scale: bool = False,
     by_horizon: bool = True,
     baseline_label: str = "baseline",
+    location_names: dict[str, str] | None = None,
+    show_points: bool = False,
+    point_budget: int = 25_000,
 ) -> go.Figure:
     """
     When by_horizon=True: 2×2 subplot grid, one panel per horizon.
@@ -677,11 +680,41 @@ def build_wis_boxplots(
     no y-axis labels, dashed darksalmon reference line at x=1.
     All hub models shown. highlight_colors maps a model to the colour its
     axis label is drawn in, bold and italic; anything absent stays grey.
+
+    With show_points, individual observations are overlaid as a hoverable layer
+    naming the location and week. The caller turns this on only for a single
+    forecast date, where each box holds at most one point per location and a
+    reader can actually pick one out. Over a season the same layer would be
+    ~271k points and 14MB — a smear rather than something hoverable, and a
+    return of the payload the summary-based boxes exist to avoid. point_budget
+    is a backstop against a selection far larger than expected.
     """
     if wis_df.empty:
         return go.Figure()
 
     highlight_colors = dict(highlight_colors or {})
+    location_names = dict(location_names or {})
+
+    def _add_points(fig, df, row, col):
+        if not show_points:
+            return
+        cols = {"wis_ratio", "model", "location", "reference_date"}
+        if not cols.issubset(df.columns):
+            return
+        pts = df.dropna(subset=["wis_ratio"])
+        if pts.empty or len(pts) > point_budget:
+            return
+        names = pts["location"].astype(str).map(lambda l: location_names.get(l, l))
+        when = pd.to_datetime(pts["reference_date"]).dt.strftime("%b %d, %Y")
+        fig.add_trace(go.Scatter(
+            x=pts["wis_ratio"], y=pts["model"].astype(str),
+            mode="markers",
+            marker=dict(size=4, color=TEAL, opacity=0.35, line=dict(width=0)),
+            showlegend=False,
+            customdata=list(zip(names, when)),
+            hovertemplate=("<b>%{customdata[0]}</b><br>%{customdata[1]}"
+                           "<br>WIS ratio: %{x:,.3f}<extra></extra>"),
+        ), row=row, col=col)
 
     def _make_ticktext(model_order):
         return [
@@ -748,6 +781,7 @@ def build_wis_boxplots(
                 showlegend=False,
                 hovertemplate=f"<b>{model}</b><br>Median WIS ratio: {median_val:.2f}<extra></extra>",
             ), row=row, col=col)
+        _add_points(fig, df, row, col)
         fig.add_vline(x=1.0, line=dict(color="#aaaaaa", width=1, dash="dot"), row=row, col=col)
         return model_order
 
@@ -807,6 +841,7 @@ def build_wis_boxplots(
         # _BASE_LAYOUT sets title_font, which leaves a title object with no text —
         # plotly then renders the string "undefined". Blank it explicitly.
         title_text="",
+        hovermode="closest",
         height=height,
         # No in-figure title: it is rendered as a page heading instead, so the
         # teal accent rule applies. Top margin trimmed to reclaim its space,

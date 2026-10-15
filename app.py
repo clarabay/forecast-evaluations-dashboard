@@ -1214,6 +1214,10 @@ offsets. Vintages start 2024-11-19.
                 wis_fig = build_wis_boxplots(
                     plot_wis,
                     highlight_colors=wis_colors,
+                    location_names=dict(zip(loc_fips, loc_names)),
+                    # One point per location is worth hovering; a season's
+                    # worth is a smear, and 14MB of payload besides.
+                    show_points=len(eval_ref_dates) == 1,
                     log_scale=wis_log,
                     by_horizon=wis_by_horizon,
                     baseline_label=hub.baseline,
