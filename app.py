@@ -1063,7 +1063,7 @@ offsets. Vintages start 2024-11-19.
     with tab_wis:
         # Selectors compressed into the left-hand columns, with the explanatory
         # text taking the freed space on the right so it sits above the boxplots.
-        wis_c1, wis_c2, wis_c3, wis_note = st.columns([1.3, 1.5, 0.9, 3.3])
+        wis_c1, wis_c2, wis_c3, wis_note = st.columns([1.3, 1.5, 1.3, 2.9])
 
         with wis_c1:
             wis_loc_options = ["All locations"] + loc_names
@@ -1105,6 +1105,21 @@ offsets. Vintages start 2024-11-19.
         with wis_c3:
             wis_by_horizon = st.checkbox("Split by horizon", value=True, key=f"wis_by_horizon_{selected_hub_label}")
             wis_log = st.checkbox("Log scale", value=False, key=f"wis_log_{selected_hub_label}")
+            # Only offered where it does something: one point per location is
+            # hoverable, a season's worth is a smear. Off by default because
+            # the points include values past the whiskers, which stretches the
+            # shared x-axis and squashes every box.
+            _wis_single_date = len(eval_ref_dates) == 1
+            wis_points = (
+                st.checkbox(
+                    "View scatter",
+                    value=False,
+                    key=f"wis_points_{selected_hub_label}",
+                    help="Show one point per location. Hover for its name and "
+                         "value; outliers will widen the x-axis.",
+                )
+                if _wis_single_date else False
+            )
 
         # Written through a placeholder so the findings sentence can be appended
         # once the table below has been computed, without moving the box.
@@ -1215,9 +1230,7 @@ offsets. Vintages start 2024-11-19.
                     plot_wis,
                     highlight_colors=wis_colors,
                     location_names=dict(zip(loc_fips, loc_names)),
-                    # One point per location is worth hovering; a season's
-                    # worth is a smear, and 14MB of payload besides.
-                    show_points=len(eval_ref_dates) == 1,
+                    show_points=wis_points,
                     log_scale=wis_log,
                     by_horizon=wis_by_horizon,
                     baseline_label=hub.baseline,
