@@ -712,7 +712,9 @@ def build_wis_boxplots(
             marker=dict(size=4, color=TEAL, opacity=0.35, line=dict(width=0)),
             showlegend=False,
             customdata=list(zip(names, when)),
-            hovertemplate=("<b>%{customdata[0]}</b><br>%{customdata[1]}"
+            # %{y} is the model: it is already the point's category, so naming
+            # it costs nothing extra in the payload.
+            hovertemplate=("<b>%{y}</b><br>%{customdata[0]}<br>%{customdata[1]}"
                            "<br>WIS ratio: %{x:,.3f}<extra></extra>"),
         ), row=row, col=col)
 
