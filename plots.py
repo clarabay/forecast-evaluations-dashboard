@@ -416,10 +416,30 @@ def _panel_date_axis(fig, n_panels: int, ncols: int) -> None:
             )
 
 
+def _panel_geometry(n_panels: int, ncols: int, row_px: int, gap_px: int):
+    """Rows, pixel height and a legal vertical_spacing for a small-multiple grid.
+
+    plotly caps vertical_spacing at 1/(rows-1), so the hard-coded 0.06 raised a
+    ValueError once a hub passed 19 rows — metrocast, at 110 sub-state
+    locations, did exactly that and the all-locations view stopped rendering.
+    Expressing the gap in pixels and converting keeps it constant as the grid
+    grows, and the clamp keeps it legal however many locations arrive next.
+    """
+    nrows = max(1, math.ceil(n_panels / ncols))
+    height = max(row_px * nrows, 600)
+    if nrows == 1:
+        return nrows, height, 0.0
+    spacing = min(gap_px / height, 0.9 / (nrows - 1))
+    return nrows, height, spacing
+
+
 def build_all_states_observed(
     observed: pd.DataFrame,
     locations_df: pd.DataFrame,
     obs_weeks: int = 13,
+    panel_cols: int = 6,
+    panel_row_px: int = 160,
+    panel_gap_px: int = 28,
 ) -> go.Figure:
     """Small-multiple observed-only charts for all locations."""
     us_row     = locations_df[locations_df["location"] == "US"]
@@ -433,8 +453,9 @@ def build_all_states_observed(
     all_rows   = pd.concat([us_row, state_rows], ignore_index=True)
     locs       = list(zip(all_rows["location"], all_rows["location_name"]))
 
-    ncols = 6
-    nrows = math.ceil(len(locs) / ncols)
+    ncols = panel_cols
+    nrows, _panel_height, _panel_vspace = _panel_geometry(
+        len(locs), ncols, panel_row_px, panel_gap_px)
     # Anchored to the latest observation, as in build_observed_chart. Deliberately
     # a single global anchor rather than per-panel, so every small multiple shares
     # the same x window and stays comparable.
@@ -446,7 +467,7 @@ def build_all_states_observed(
         subplot_titles=[name for _, name in locs],
         shared_xaxes=False, shared_yaxes=False,
         horizontal_spacing=0.025,
-        vertical_spacing=0.06,
+        vertical_spacing=_panel_vspace,
     )
 
     for idx, (fips, name) in enumerate(locs):
@@ -482,7 +503,7 @@ def build_all_states_observed(
         **_BASE_LAYOUT,
         title=dict(text="All Locations", x=0.0, xanchor="left"),
         margin=dict(l=10, r=30, t=55, b=40),
-        height=max(160 * nrows, 600),
+        height=_panel_height,
         showlegend=False,
     )
     for ann in fig.layout.annotations:
@@ -498,6 +519,9 @@ def build_all_states_panel(
     ref_date: str,
     obs_weeks: int = 13,
     pi_levels: list[int] | None = None,
+    panel_cols: int = 6,
+    panel_row_px: int = 160,
+    panel_gap_px: int = 28,
 ) -> go.Figure:
     """
     Small-multiple fan charts for all locations. US first, then locations sorted by state/name.
@@ -515,8 +539,9 @@ def build_all_states_panel(
     all_rows   = pd.concat([us_row, state_rows], ignore_index=True)
     locs       = list(zip(all_rows["location"], all_rows[_label_col], all_rows["location_name"]))
 
-    ncols = 6
-    nrows = math.ceil(len(locs) / ncols)
+    ncols = panel_cols
+    nrows, _panel_height, _panel_vspace = _panel_geometry(
+        len(locs), ncols, panel_row_px, panel_gap_px)
 
     ref_ts    = pd.Timestamp(ref_date)
     obs_start = max(ref_ts - pd.Timedelta(weeks=obs_weeks), pd.Timestamp("2022-10-01"))
@@ -531,7 +556,7 @@ def build_all_states_panel(
         subplot_titles=[name for _, _, name in locs],
         shared_xaxes=False, shared_yaxes=False,
         horizontal_spacing=0.025,
-        vertical_spacing=0.06,
+        vertical_spacing=_panel_vspace,
     )
 
     legend_added: set[str] = set()
@@ -652,7 +677,7 @@ def build_all_states_panel(
         legend=dict(x=1.01, y=1.0, xanchor="left",
                     bgcolor="rgba(255,255,255,0.85)", bordercolor="#dddddd", borderwidth=1,
                     font=dict(size=11)),
-        height=max(160 * nrows, 600),
+        height=_panel_height,
         showlegend=True,
     )
     for ann in fig.layout.annotations:

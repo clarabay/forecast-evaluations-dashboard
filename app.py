@@ -942,6 +942,9 @@ def render_hub(selected_hub_label: str) -> None:
                         observed=truth_df,
                         locations_df=locations_df,
                         obs_weeks=obs_weeks,
+                        panel_cols=hub.panel_cols,
+                        panel_row_px=hub.panel_row_px,
+                        panel_gap_px=hub.panel_gap_px,
                     )
                 st.plotly_chart(obs_panel_fig, use_container_width=True, config={"displayModeBar": False})
         else:
@@ -1028,6 +1031,9 @@ def render_hub(selected_hub_label: str) -> None:
                                 ref_date=selected_forecast_date,
                                 obs_weeks=obs_weeks,
                                 pi_levels=pi_levels,
+                                panel_cols=hub.panel_cols,
+                                panel_row_px=hub.panel_row_px,
+                                panel_gap_px=hub.panel_gap_px,
                             )
                         st.plotly_chart(panel_fig, use_container_width=True, config={"displayModeBar": False})
 

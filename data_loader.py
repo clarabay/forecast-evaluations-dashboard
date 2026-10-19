@@ -94,6 +94,12 @@ class HubConfig:
     # names, counts vs percents, and NSSP needs a server-side filter because
     # it is county-level. Dispatch on this rather than parameterising all of it.
     socrata_kind: str = "nhsn"         # "nhsn" | "nssp"
+    # All-locations panel geometry. Metrocast carries 110 sub-state locations
+    # against ~53 states elsewhere, so it needs taller panels and a tighter gap
+    # to stay legible over a 19-row grid.
+    panel_cols: int = 6
+    panel_row_px: int = 160
+    panel_gap_px: int = 28
     # Delphi V5 signal backing the "data as of the forecast date" overlay.
     # Only hubs with a signal here can offer the toggle.
     delphi_source: Optional[str] = None
@@ -257,6 +263,12 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         baseline         = "epiENGAGE-baseline",
         locations_source = "metrocast",
         cache_dir        = "metrocast",
+        # 110 locations: a wider grid keeps the page from running to 4000px,
+        # taller rows give the y-axis room, and a small gap stops the labels
+        # floating away from their panels.
+        panel_cols       = 7,
+        panel_row_px     = 215,
+        panel_gap_px     = 14,
         y_label          = "% ED Visits (Flu)",
         unit_noun        = "percent of ED visits",
         ensemble_model   = "epiENGAGE-ensemble_mean",
