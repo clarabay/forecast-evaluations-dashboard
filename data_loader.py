@@ -268,7 +268,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         # floating away from their panels.
         panel_cols       = 7,
         panel_row_px     = 215,
-        panel_gap_px     = 14,
+        panel_gap_px     = 22,
         y_label          = "% ED Visits (Flu)",
         unit_noun        = "percent of ED visits",
         ensemble_model   = "epiENGAGE-ensemble_mean",
