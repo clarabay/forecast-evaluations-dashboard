@@ -47,6 +47,13 @@ jobs:
         env:
           # Lifts the API rate limit from 60/hour to 1000/hour for this repo.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # build_scores.py calls load_truth_data, which pulls CDC's preliminary
+          # NHSN and NSSP feeds from Socrata. The runner is a separate
+          # environment from both the laptop and Streamlit Cloud, so the token
+          # has to be handed to it explicitly or sodapy falls back to anonymous
+          # ("Requests made without an app_token will be subject to strict
+          # throttling limits"). Unset is harmless — it just throttles.
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
         run: python scripts/build_scores.py
 
       - name: Commit if changed
