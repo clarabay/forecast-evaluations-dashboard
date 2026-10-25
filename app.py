@@ -1253,7 +1253,9 @@ offsets. Vintages start 2024-11-19.
                         "WIS splits into the width of a model's intervals and the two "
                         "ways it can miss. Two models can score alike for opposite "
                         "reasons — one too wide, one confidently wrong — and the "
-                        "segments below add back to the mean WIS.</p>",
+                        "segments below add back to the mean WIS. Averaged over "
+                        f"{_selection_label(eval_scope, eval_ref_dates, wis_all_locs, wis_loc_name)}"
+                        ".</p>",
                         unsafe_allow_html=True,
                     )
                     # One model by default: every model at once is 50+ stacked
