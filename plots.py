@@ -1020,6 +1020,7 @@ def build_wis_decomposition(
     wis_df: pd.DataFrame,
     highlight_colors: dict[str, str] | None = None,
     by_horizon: bool = True,
+    value_label: str = "Mean WIS",
 ) -> go.Figure:
     """Stacked bars splitting mean WIS into its three terms, one bar per model.
 
@@ -1114,7 +1115,7 @@ def build_wis_decomposition(
             showgrid=False, linecolor="#cccccc",
         )
 
-    fig.update_xaxes(title_text="Mean WIS", title_standoff=12,
+    fig.update_xaxes(title_text=value_label, title_standoff=12,
                      showgrid=True, gridcolor="#eeeeee", linecolor="#cccccc",
                      rangemode="tozero")
     fig.update_layout(

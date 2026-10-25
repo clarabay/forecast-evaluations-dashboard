@@ -1246,56 +1246,14 @@ offsets. Vintages start 2024-11-19.
                 st.plotly_chart(wis_fig, use_container_width=True, config={"displayModeBar": False})
 
                 # ── WIS decomposition ──────────────────────────────────────
+                # This chart carries its own location and forecast-date
+                # selectors. The page selectors sit a screenful up, and the
+                # decomposition needs a single location regardless: WIS is in
+                # the units of the outcome, so pooling locations weights them
+                # by size and the bars would show little but the big states.
                 st.markdown("##### WIS decomposition")
-                if wis_all_locs:
-                    # WIS is in the units of the outcome, so pooling locations
-                    # weights them by size: an "all locations" bar is mostly
-                    # California, Texas and New York, and the mix it shows is
-                    # not the mix any one place sees.
-                    st.info(
-                        "WIS is measured in the units of the outcome, so averaging "
-                        "across locations weights them by size — the bars would "
-                        "mostly show the largest states. Pick a single location "
-                        "above to see its decomposition."
-                    )
-                elif set(WIS_DECOMP_COLS).issubset(plot_wis.columns):
-                    st.markdown(
-                        "<p style='color:#666; font-size:0.86rem; margin:-6px 0 10px;'>"
-                        "WIS splits into the width of a model's intervals and the two "
-                        "ways it can miss. Two models can score alike for opposite "
-                        "reasons — one too wide, one confidently wrong — and the "
-                        "segments below add back to the mean WIS. Averaged over "
-                        f"{_selection_label(eval_scope, eval_ref_dates, wis_all_locs, wis_loc_name)}"
-                        ".</p>",
-                        unsafe_allow_html=True,
-                    )
-                    # One model by default: every model at once is 50+ stacked
-                    # bars per panel, which is unreadable and buries the
-                    # comparison the chart exists to make.
-                    _dec_options = sorted(plot_wis["model"].astype(str).unique())
-                    _dec_default = ([hub.ensemble_model]
-                                    if hub.ensemble_model in _dec_options
-                                    else _dec_options[:1])
-                    _dec_col, _ = st.columns([2, 1])
-                    with _dec_col:
-                        dec_models = st.multiselect(
-                            "Models to decompose",
-                            options=_dec_options,
-                            default=_dec_default,
-                            key=f"wis_decomp_models_{selected_hub_label}",
-                            placeholder="Choose at least one model",
-                        )
-                    if dec_models:
-                        decomp_fig = build_wis_decomposition(
-                            plot_wis[plot_wis["model"].astype(str).isin(dec_models)],
-                            highlight_colors=wis_colors,
-                            by_horizon=wis_by_horizon,
-                        )
-                        st.plotly_chart(decomp_fig, use_container_width=True,
-                                        config={"displayModeBar": False})
-                    else:
-                        st.caption("Select a model to see its decomposition.")
-                else:
+                _dec_base = precomputed_wis if not precomputed_wis.empty else plot_wis
+                if not set(WIS_DECOMP_COLS).issubset(_dec_base.columns):
                     # The columns arrived with this feature; scores built before
                     # it do not carry them and the action has to run once.
                     st.info(
@@ -1303,6 +1261,111 @@ offsets. Vintages start 2024-11-19.
                         "current `precomputed/` files were built. Re-run the "
                         "**Update precomputed scores** action and it will appear."
                     )
+                else:
+                    st.markdown(
+                        "<p style='color:#666; font-size:0.86rem; margin:-6px 0 10px;'>"
+                        "WIS splits into the width of a model's intervals and the two "
+                        "ways it can miss. Two models can score alike for opposite "
+                        "reasons — one too wide, one confidently wrong — and the "
+                        "segments below add back to the total. Shown one location and "
+                        "one forecast date at a time, because WIS is measured in the "
+                        "units of the outcome and averaging across locations would "
+                        "mostly show the largest states.</p>",
+                        unsafe_allow_html=True,
+                    )
+                    dec_c1, dec_c2, dec_c3 = st.columns([1.2, 1.2, 2.6])
+
+                    if precomputed_wis.empty:
+                        # Nothing to re-slice, so the chart follows the page
+                        # selectors instead of carrying its own.
+                        _dec_df = pd.DataFrame() if wis_all_locs else plot_wis
+                        _dec_label = _selection_label(
+                            eval_scope, eval_ref_dates, wis_all_locs, wis_loc_name)
+                    else:
+                        with dec_c1:
+                            _dec_loc_idx = (
+                                loc_names.index(wis_loc_name)
+                                if not wis_all_locs and wis_loc_name in loc_names
+                                else (loc_names.index("US") if "US" in loc_names else 0)
+                            )
+                            dec_loc_name = st.selectbox(
+                                "Location",
+                                options=loc_names,
+                                index=_dec_loc_idx,
+                                key=f"wis_decomp_loc_{selected_hub_label}",
+                            )
+                        with dec_c2:
+                            _dec_dates = sorted(
+                                pd.to_datetime(precomputed_wis["reference_date"])
+                                  .dt.strftime("%Y-%m-%d").unique(),
+                                reverse=True,
+                            )
+                            if _min_date:
+                                _dec_dates = [d for d in _dec_dates if d >= _min_date]
+                            _dec_date_idx = (
+                                _dec_dates.index(eval_ref_dates[0])
+                                if len(eval_ref_dates) == 1
+                                and eval_ref_dates[0] in _dec_dates
+                                else 0
+                            )
+                            dec_date = st.selectbox(
+                                "Forecast date",
+                                options=_dec_dates,
+                                index=_dec_date_idx,
+                                key=f"wis_decomp_date_{selected_hub_label}",
+                            )
+                        _dec_df = filter_scores(
+                            precomputed_wis,
+                            ref_dates=[dec_date],
+                            location=name_to_fips[dec_loc_name],
+                        )
+                        _dec_df = _dec_df[_dec_df["model"] != hub.baseline]
+                        _dec_label = f"{dec_date} · {dec_loc_name}"
+
+                    # One model by default: every model at once is 50+ stacked
+                    # bars per panel, which is unreadable and buries the
+                    # comparison the chart exists to make.
+                    _dec_options = (sorted(_dec_df["model"].astype(str).unique())
+                                    if not _dec_df.empty else [])
+                    _dec_default = ([hub.ensemble_model]
+                                    if hub.ensemble_model in _dec_options
+                                    else _dec_options[:1])
+                    # Changing location or date changes which models have a
+                    # score, and a stale selection would otherwise raise.
+                    _dec_key = f"wis_decomp_models_{selected_hub_label}"
+                    if _dec_key in st.session_state:
+                        _kept = [m for m in st.session_state[_dec_key]
+                                 if m in _dec_options]
+                        st.session_state[_dec_key] = _kept or _dec_default
+                        # Passing `default` as well as a session-state value
+                        # makes Streamlit warn about the two disagreeing.
+                        _dec_kwargs = {}
+                    else:
+                        _dec_kwargs = {"default": _dec_default}
+                    with dec_c3:
+                        dec_models = st.multiselect(
+                            "Models to decompose",
+                            options=_dec_options,
+                            key=_dec_key,
+                            placeholder="Choose at least one model",
+                            **_dec_kwargs,
+                        )
+                    if _dec_df.empty:
+                        st.info(f"No scores for {_dec_label}.")
+                    elif dec_models:
+                        decomp_fig = build_wis_decomposition(
+                            _dec_df[_dec_df["model"].astype(str).isin(dec_models)],
+                            highlight_colors=wis_colors,
+                            by_horizon=wis_by_horizon,
+                            # One location and one date means one score per
+                            # model and horizon, so nothing is averaged until
+                            # the horizons are pooled.
+                            value_label="WIS" if wis_by_horizon else "Mean WIS",
+                        )
+                        st.plotly_chart(decomp_fig, use_container_width=True,
+                                        config={"displayModeBar": False})
+                    else:
+                        st.caption("Select a model to see its decomposition.")
 
                 wis_table = summarize_wis(plot_wis)
                 if not wis_table.empty:
