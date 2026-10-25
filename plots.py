@@ -30,7 +30,7 @@ HIGHLIGHT_BLUE = "#1F4E99"
 
 # WIS decomposition. Deliberately muted and outside the highlight trio above,
 # which colours the model labels on the same chart.
-WIS_DISPERSION_COLOR = "#8C8C8C"
+WIS_DISPERSION_COLOR = "#78B7A2"
 WIS_UNDER_COLOR      = "#0072B2"
 WIS_OVER_COLOR       = "#D55E00"
 
@@ -1072,25 +1072,32 @@ def build_wis_decomposition(
     per_model_px = 22
 
     if by_horizon:
-        height = max(per_model_px * n_models * 2 + 260, 560)
-        v_spacing = min(0.20, 130 / height)
+        # Only horizons with scored forecasts get a panel. Early in a season
+        # the longer ones have no observed week yet, and reserving their cells
+        # left two titled but empty boxes and a screen of white space.
+        horizons = [h for h in range(4)
+                    if not wis_df[wis_df["horizon"] == h].empty]
+        if not horizons:
+            return go.Figure()
+        n_cols = 2 if len(horizons) > 1 else 1
+        n_rows = math.ceil(len(horizons) / n_cols)
+        height = max(per_model_px * n_models * n_rows + 300, 300 * n_rows + 40)
+        v_spacing = (min(0.20, 130 / height) if n_rows > 1 else 0)
         fig = make_subplots(
-            rows=2, cols=2,
-            subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}" for h in range(4)],
+            rows=n_rows, cols=n_cols,
+            subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}"
+                            for h in horizons],
             horizontal_spacing=0.10, vertical_spacing=v_spacing,
         )
-        positions = {0: (1, 1), 1: (1, 2), 2: (2, 1), 3: (2, 2)}
         first = True
-        for horizon in range(4):
-            row, col = positions[horizon]
+        for idx, horizon in enumerate(horizons):
+            row, col = idx // n_cols + 1, idx % n_cols + 1
             h_df = wis_df[wis_df["horizon"] == horizon]
-            if h_df.empty:
-                continue
             order = _panel(fig, h_df, row, col, show_legend=first)
             if not order:
                 continue
             first = False
-            axis = "yaxis" if (row == 1 and col == 1) else f"yaxis{(row - 1) * 2 + col}"
+            axis = "yaxis" if idx == 0 else f"yaxis{idx + 1}"
             fig.layout[axis].update(
                 tickmode="array", tickvals=order,
                 ticktext=_ticktext(order) if col == 1 else ["" for _ in order],
@@ -1116,15 +1123,21 @@ def build_wis_decomposition(
         barmode="stack",
         hovermode="closest",
         height=height,
-        margin=dict(l=220, r=30, t=50, b=70),
-        legend=dict(orientation="h", yanchor="bottom", y=1.04, x=0,
+        # Top margin carries the legend clear of the subplot titles, which sit
+        # just above each panel; at 50px the two landed on top of each other.
+        margin=dict(l=220, r=30, t=86, b=70),
+        legend=dict(orientation="h", yanchor="bottom", y=1.10, x=0,
                     bgcolor="rgba(0,0,0,0)"),
     )
     # One axis title, under the bottom row. Repeating it on every panel put a
     # "Mean WIS" directly beneath each upper panel, colliding with the subplot
     # title of the row below.
-    if by_horizon:
-        for axis in ("xaxis", "xaxis2"):
+    if by_horizon and n_rows > 1:
+        # Keep the title under the bottom row only; on upper rows it collided
+        # with the subplot title beneath it.
+        last_row_start = (n_rows - 1) * n_cols
+        for idx in range(last_row_start):
+            axis = "xaxis" if idx == 0 else f"xaxis{idx + 1}"
             if axis in fig.layout:
                 fig.layout[axis].update(title_text="")
     return fig

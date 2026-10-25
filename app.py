@@ -1247,7 +1247,18 @@ offsets. Vintages start 2024-11-19.
 
                 # ── WIS decomposition ──────────────────────────────────────
                 st.markdown("##### WIS decomposition")
-                if set(WIS_DECOMP_COLS).issubset(plot_wis.columns):
+                if wis_all_locs:
+                    # WIS is in the units of the outcome, so pooling locations
+                    # weights them by size: an "all locations" bar is mostly
+                    # California, Texas and New York, and the mix it shows is
+                    # not the mix any one place sees.
+                    st.info(
+                        "WIS is measured in the units of the outcome, so averaging "
+                        "across locations weights them by size — the bars would "
+                        "mostly show the largest states. Pick a single location "
+                        "above to see its decomposition."
+                    )
+                elif set(WIS_DECOMP_COLS).issubset(plot_wis.columns):
                     st.markdown(
                         "<p style='color:#666; font-size:0.86rem; margin:-6px 0 10px;'>"
                         "WIS splits into the width of a model's intervals and the two "
