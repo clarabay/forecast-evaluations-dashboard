@@ -119,6 +119,9 @@ class HubConfig:
                            # where a bare number reads better than a unit phrase
     ensemble_model: Optional[str] = None  # named explicitly: several hubs carry a
                            # FluSight-ensemble directory regardless of target
+    ensemble_history: tuple = ()  # (first reference_date, model) for hubs that
+                           # renamed or replaced their ensemble mid-stream,
+                           # oldest first; see hub_ensemble_model()
     default_location: Optional[str] = None  # location code the fan chart opens on;
                            # falls back to US, then the first location
 
@@ -129,6 +132,7 @@ _EPISTORM_FLU = [
     "MOBS-GLEAM_FLUH",
     "MIGHTE-Nsemble",
     "MIGHTE-Joint",
+    "MIGHTE-Linear",
     "NU_UCSD-GLEAM_AI_FLUH",
     "CEPH-Rtrend_fluH",
     "NEU_ISI-FluBcast",
@@ -279,17 +283,44 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         y_label          = "% ED Visits (Flu)",
         unit_noun        = "percent of ED visits",
         ensemble_model   = "epiENGAGE-ensemble_mean",
+        # epiENGAGE-ensemble_mean stopped after 2026-05-23; the 2026-27 season
+        # replaced it with a short- and a long-horizon ensemble, and the short
+        # one is the counterpart of the old mean.
+        ensemble_history = (("2026-10-24", "epiENGAGE-ensemble_short"),),
         default_location = "boston",
         socrata_id       = None,
         truth_target_filter = "Flu ED visits pct",
         default_models   = [
             "epiENGAGE-baseline",
             "epiENGAGE-ensemble_mean",
+            "epiENGAGE-ensemble_short",
             "MOBS-EpyStrain_Flu",
         ],
         epistorm_models  = ["MOBS-EpyStrain_Flu"],
     ),
 }
+
+def hub_ensemble_model(hub: HubConfig, ref_date: Optional[str] = None) -> Optional[str]:
+    """
+    The hub's ensemble as of a reference date.
+
+    Hubs rename or replace their ensemble between seasons, and the old scores
+    stay in the precomputed tables, so a single name would either mislabel the
+    history or lose the current entry. With no date, the newest name wins.
+    """
+    name = hub.ensemble_model
+    for start, model in hub.ensemble_history:
+        if ref_date is None or str(ref_date) >= start:
+            name = model
+    return name
+
+
+def hub_ensemble_models(hub: HubConfig) -> list[str]:
+    """Every ensemble name this hub has used, newest last."""
+    names = [hub.ensemble_model] if hub.ensemble_model else []
+    names += [m for _, m in hub.ensemble_history if m not in names]
+    return names
+
 
 HUB_LABELS = list(HUB_CONFIGS.keys())
 

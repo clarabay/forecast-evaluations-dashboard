@@ -834,27 +834,34 @@ def build_wis_boxplots(
     per_model_px = 22
 
     if by_horizon:
-        panel_rows = 2
-        height = max(per_model_px * n_models * panel_rows + 220, 600)
+        # Only horizons with scored forecasts get a panel, and the grid is
+        # sized to them. A fixed 2x2 reserved two titled but empty cells early
+        # in a season, when the longer horizons have no observed week yet, and
+        # the height reserved two full rows of models to go with them.
+        horizons = [h for h in range(4)
+                    if not wis_df[wis_df["horizon"] == h].empty] or [0]
+        n_cols = 1 if len(horizons) == 1 else 2
+        panel_rows = math.ceil(len(horizons) / n_cols)
+        height = max(per_model_px * n_models * panel_rows + 220,
+                     300 * panel_rows)
         # vertical_spacing is a fraction of total height, so a fixed 0.18 turns
         # into a several-hundred-pixel gap once the figure is tall. Hold the gap
         # near 90px instead, and never exceed the original fraction.
-        v_spacing = min(0.18, 90 / height)
+        v_spacing = (min(0.18, 90 / height, 0.9 / (panel_rows - 1))
+                     if panel_rows > 1 else 0)
 
-        horizons = [0, 1, 2, 3]
-        subplot_positions = {0: (1, 1), 1: (1, 2), 2: (2, 1), 3: (2, 2)}
         fig = make_subplots(
-            rows=2, cols=2,
+            rows=panel_rows, cols=n_cols,
             subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}" for h in horizons],
             horizontal_spacing=0.10, vertical_spacing=v_spacing,
         )
-        for horizon in horizons:
-            row, col = subplot_positions[horizon]
+        for idx, horizon in enumerate(horizons):
+            row, col = idx // n_cols + 1, idx % n_cols + 1
             h_df = wis_df[wis_df["horizon"] == horizon]
             if h_df.empty:
                 continue
             model_order = _add_boxes(fig, h_df, row, col)
-            axis_key = "yaxis" if (row == 1 and col == 1) else f"yaxis{(row - 1) * 2 + col}"
+            axis_key = "yaxis" if idx == 0 else f"yaxis{idx + 1}"
             _set_yaxis(fig, axis_key, model_order)
     else:
         height = max(per_model_px * n_models + 180, 400)

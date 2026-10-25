@@ -20,6 +20,8 @@ from data_loader import (
     check_github_rate_limit,
     fetch_forecast,
     filter_scores,
+    hub_ensemble_model,
+    hub_ensemble_models,
     get_all_available_dates,
     get_model_list,
     load_forecasts_for_selection,
@@ -262,7 +264,9 @@ _hub_descriptions = {
 # MIGHTE-Base is shown with the wider Epistorm set rather than the primary one,
 # and MIGHTE-Linear joins that set without being an Epistorm submission.
 _HIGHLIGHT_DEMOTE_TO_TEAL = {"MIGHTE-Base"}
-_HIGHLIGHT_TEAL_EXTRA     = ["MIGHTE-Linear"]
+# Teal models that are not Epistorm submissions. Empty now that MIGHTE-Linear
+# is in the Epistorm list itself, but kept as the seam for the next one.
+_HIGHLIGHT_TEAL_EXTRA     = []
 
 
 def _highlight_groups(hub, all_models: list[str]) -> dict[str, str]:
@@ -281,7 +285,8 @@ def _highlight_groups(hub, all_models: list[str]) -> dict[str, str]:
     available = set(all_models)
     # The baseline shares the ensemble's colour: both are references rather
     # than entries, and the baseline sits at a ratio of 1.0 by construction.
-    blue = [m for m in (hub.ensemble_model, hub.baseline) if m and m in available]
+    blue = [m for m in (*hub_ensemble_models(hub), hub.baseline)
+            if m and m in available]
     blue_set = set(blue)
 
     red = [
@@ -913,7 +918,8 @@ def render_hub(selected_hub_label: str) -> None:
         # Taken from the hub config rather than matched against a list of known
         # ensemble names: the metrocast repo also carries a FluSight-ensemble
         # directory, so name-matching picked the wrong one there.
-        fc_ensemble = hub.ensemble_model if hub.ensemble_model in all_models else None
+        _fc_ens_name = hub_ensemble_model(hub, selected_forecast_date)
+        fc_ensemble = _fc_ens_name if _fc_ens_name in all_models else None
         fc_default_models = [fc_ensemble] if fc_ensemble else all_models[:1]
         fc_epistorm = _epistorm_available(hub, all_models)
         with st.expander("Models to include", expanded=False):
@@ -1342,8 +1348,9 @@ offsets. Vintages start 2024-11-19.
                     # comparison the chart exists to make.
                     _dec_options = (sorted(_dec_df["model"].astype(str).unique())
                                     if not _dec_df.empty else [])
-                    _dec_default = ([hub.ensemble_model]
-                                    if hub.ensemble_model in _dec_options
+                    _dec_ens = hub_ensemble_model(
+                        hub, dec_date if not precomputed_wis.empty else None)
+                    _dec_default = ([_dec_ens] if _dec_ens in _dec_options
                                     else _dec_options[:1])
                     # Changing location or date changes which models have a
                     # score, and a stale selection would otherwise raise.
