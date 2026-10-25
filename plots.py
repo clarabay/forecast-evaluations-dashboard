@@ -30,9 +30,9 @@ HIGHLIGHT_BLUE = "#1F4E99"
 
 # WIS decomposition. Deliberately muted and outside the highlight trio above,
 # which colours the model labels on the same chart.
-WIS_DISPERSION_COLOR = "#AEB6BD"
-WIS_UNDER_COLOR      = "#5B8FA8"
-WIS_OVER_COLOR       = "#D98E5A"
+WIS_DISPERSION_COLOR = "#8C8C8C"
+WIS_UNDER_COLOR      = "#0072B2"
+WIS_OVER_COLOR       = "#D55E00"
 
 # The "as of forecast date" observed line. Deliberately not in SET2_PALETTE,
 # so it can never be confused with a model median, and not black, so it reads
@@ -1035,17 +1035,21 @@ def build_wis_decomposition(
 
     highlight_colors = dict(highlight_colors or {})
 
+    # One order for every panel, from the overall totals. Sorting each panel
+    # independently put the same model at a different height per horizon, and
+    # made the per-panel axis labels disagree across columns.
+    _overall = (wis_df.groupby("model", observed=True)[WIS_DECOMP_COLS]
+                      .mean().dropna(how="all"))
+    _overall = _overall.assign(_t=_overall.sum(axis=1)).sort_values("_t", ascending=False)
+    model_order = _overall.index.tolist()
+
     def _panel(fig, df, row, col, show_legend):
-        means = df.groupby("model", observed=True)[WIS_DECOMP_COLS].mean()
-        means = means.dropna(how="all")
-        if means.empty:
-            return []
-        means["_total"] = means.sum(axis=1)
-        means = means.sort_values("_total", ascending=False)
-        order = means.index.tolist()
+        means = (df.groupby("model", observed=True)[WIS_DECOMP_COLS]
+                   .mean().reindex(model_order))
+        order = model_order
         for key, label, colour in _WIS_PARTS:
             fig.add_trace(go.Bar(
-                x=means[key].values, y=order,
+                x=means[key].fillna(0).values, y=order,
                 orientation="h",
                 name=label,
                 marker=dict(color=colour, line=dict(width=0)),
@@ -1068,8 +1072,8 @@ def build_wis_decomposition(
     per_model_px = 22
 
     if by_horizon:
-        height = max(per_model_px * n_models * 2 + 220, 360)
-        v_spacing = min(0.18, 90 / height)
+        height = max(per_model_px * n_models * 2 + 260, 560)
+        v_spacing = min(0.20, 130 / height)
         fig = make_subplots(
             rows=2, cols=2,
             subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}" for h in range(4)],
@@ -1088,7 +1092,8 @@ def build_wis_decomposition(
             first = False
             axis = "yaxis" if (row == 1 and col == 1) else f"yaxis{(row - 1) * 2 + col}"
             fig.layout[axis].update(
-                tickmode="array", tickvals=order, ticktext=_ticktext(order),
+                tickmode="array", tickvals=order,
+                ticktext=_ticktext(order) if col == 1 else ["" for _ in order],
                 tickfont=dict(size=11, color="dimgray"),
                 showgrid=False, linecolor="#cccccc",
             )
@@ -1112,6 +1117,14 @@ def build_wis_decomposition(
         hovermode="closest",
         height=height,
         margin=dict(l=220, r=30, t=50, b=70),
-        legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.04, x=0,
+                    bgcolor="rgba(0,0,0,0)"),
     )
+    # One axis title, under the bottom row. Repeating it on every panel put a
+    # "Mean WIS" directly beneath each upper panel, colliding with the subplot
+    # title of the row below.
+    if by_horizon:
+        for axis in ("xaxis", "xaxis2"):
+            if axis in fig.layout:
+                fig.layout[axis].update(title_text="")
     return fig
