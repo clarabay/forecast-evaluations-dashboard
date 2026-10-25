@@ -1029,25 +1029,25 @@ def build_wis_decomposition(
     one confidently off. The stack shows which, and the segments add back to the
     total because the components are scaled by the same 1/11.5 as the score.
 
-    Sorted by total so the order matches the boxplot above: best at the top.
+    Horizons stack vertically, one per row, each sorted by its own WIS with
+    best at the top.
     """
     if wis_df.empty or not set(WIS_DECOMP_COLS).issubset(wis_df.columns):
         return go.Figure()
 
     highlight_colors = dict(highlight_colors or {})
 
-    # One order for every panel, from the overall totals. Sorting each panel
-    # independently put the same model at a different height per horizon, and
-    # made the per-panel axis labels disagree across columns.
-    _overall = (wis_df.groupby("model", observed=True)[WIS_DECOMP_COLS]
-                      .mean().dropna(how="all"))
-    _overall = _overall.assign(_t=_overall.sum(axis=1)).sort_values("_t", ascending=False)
-    model_order = _overall.index.tolist()
-
-    def _panel(fig, df, row, col, show_legend):
+    def _panel(fig, df, row, show_legend):
         means = (df.groupby("model", observed=True)[WIS_DECOMP_COLS]
-                   .mean().reindex(model_order))
-        order = model_order
+                   .mean().dropna(how="all"))
+        if means.empty:
+            return []
+        # Each panel sorts itself. A single order taken from the overall
+        # totals left the short horizons visibly out of order, because the
+        # long ones score several times higher and dominated the average.
+        order = (means.assign(_t=means.sum(axis=1))
+                      .sort_values("_t", ascending=False).index.tolist())
+        means = means.reindex(order)
         for key, label, colour in _WIS_PARTS:
             fig.add_trace(go.Bar(
                 x=means[key].fillna(0).values, y=order,
@@ -1058,7 +1058,7 @@ def build_wis_decomposition(
                 showlegend=show_legend,
                 hovertemplate=("<b>%{y}</b><br>" + label +
                                ": %{x:,.3f}<extra></extra>"),
-            ), row=row, col=col)
+            ), row=row, col=1)
         return order
 
     def _ticktext(order):
@@ -1069,51 +1069,58 @@ def build_wis_decomposition(
             for m in order
         ]
 
-    n_models = wis_df["model"].nunique()
-    per_model_px = 22
-
-    if by_horizon:
-        # Only horizons with scored forecasts get a panel. Early in a season
-        # the longer ones have no observed week yet, and reserving their cells
-        # left two titled but empty boxes and a screen of white space.
-        horizons = [h for h in range(4)
-                    if not wis_df[wis_df["horizon"] == h].empty]
-        if not horizons:
-            return go.Figure()
-        n_cols = 2 if len(horizons) > 1 else 1
-        n_rows = math.ceil(len(horizons) / n_cols)
-        height = max(per_model_px * n_models * n_rows + 300, 300 * n_rows + 40)
-        v_spacing = (min(0.20, 130 / height) if n_rows > 1 else 0)
-        fig = make_subplots(
-            rows=n_rows, cols=n_cols,
-            subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}"
-                            for h in horizons],
-            horizontal_spacing=0.10, vertical_spacing=v_spacing,
-        )
-        first = True
-        for idx, horizon in enumerate(horizons):
-            row, col = idx // n_cols + 1, idx % n_cols + 1
-            h_df = wis_df[wis_df["horizon"] == horizon]
-            order = _panel(fig, h_df, row, col, show_legend=first)
-            if not order:
-                continue
-            first = False
-            axis = "yaxis" if idx == 0 else f"yaxis{idx + 1}"
-            fig.layout[axis].update(
-                tickmode="array", tickvals=order,
-                ticktext=_ticktext(order) if col == 1 else ["" for _ in order],
-                tickfont=dict(size=11, color="dimgray"),
-                showgrid=False, linecolor="#cccccc",
-            )
-    else:
-        height = max(per_model_px * n_models + 180, 260)
-        fig = make_subplots(rows=1, cols=1)
-        order = _panel(fig, wis_df, 1, 1, show_legend=True)
-        fig.layout["yaxis"].update(
+    def _style_y(idx, order):
+        axis = "yaxis" if idx == 0 else f"yaxis{idx + 1}"
+        fig.layout[axis].update(
             tickmode="array", tickvals=order, ticktext=_ticktext(order),
             tickfont=dict(size=11, color="dimgray"),
             showgrid=False, linecolor="#cccccc",
         )
+
+    n_models = wis_df["model"].nunique()
+    per_model_px = 22
+    margin_t, margin_b = 86, 60
+    # Height follows the content. A fixed floor per row padded a one-model,
+    # one-horizon chart out to a screenful of white around a single bar.
+    row_px = max(per_model_px * n_models, 60)
+    title_px = 26
+
+    if by_horizon:
+        # Only horizons with scored forecasts get a row. Early in a season the
+        # longer ones have no observed week yet, and reserving their cells left
+        # titled but empty boxes and a screen of white space.
+        horizons = [h for h in range(4)
+                    if not wis_df[wis_df["horizon"] == h].empty]
+        if not horizons:
+            return go.Figure()
+        n_rows = len(horizons)
+        gap_px = 68 if n_rows > 1 else 0
+        height = (n_rows * (row_px + title_px) + (n_rows - 1) * gap_px
+                  + margin_t + margin_b)
+        plot_px = height - margin_t - margin_b
+        v_spacing = (min(gap_px / plot_px, 0.9 / (n_rows - 1))
+                     if n_rows > 1 else 0)
+        fig = make_subplots(
+            rows=n_rows, cols=1,
+            subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}"
+                            for h in horizons],
+            vertical_spacing=v_spacing,
+        )
+        first = True
+        for idx, horizon in enumerate(horizons):
+            order = _panel(fig, wis_df[wis_df["horizon"] == horizon],
+                           idx + 1, show_legend=first)
+            if not order:
+                continue
+            first = False
+            _style_y(idx, order)
+    else:
+        n_rows = 1
+        height = row_px + title_px + margin_t + margin_b
+        plot_px = height - margin_t - margin_b
+        fig = make_subplots(rows=1, cols=1)
+        order = _panel(fig, wis_df, 1, show_legend=True)
+        _style_y(0, order)
 
     fig.update_xaxes(title_text=value_label, title_standoff=12,
                      showgrid=True, gridcolor="#eeeeee", linecolor="#cccccc",
@@ -1124,21 +1131,18 @@ def build_wis_decomposition(
         barmode="stack",
         hovermode="closest",
         height=height,
-        # Top margin carries the legend clear of the subplot titles, which sit
-        # just above each panel; at 50px the two landed on top of each other.
-        margin=dict(l=220, r=30, t=86, b=70),
-        legend=dict(orientation="h", yanchor="bottom", y=1.10, x=0,
-                    bgcolor="rgba(0,0,0,0)"),
+        margin=dict(l=220, r=30, t=margin_t, b=margin_b),
+        # Offset in pixels, not a fixed fraction: the chart's height varies
+        # with the number of models, and a constant 1.10 either collided with
+        # the subplot title or sailed off the top of the margin.
+        legend=dict(orientation="h", yanchor="bottom", y=1 + 34 / plot_px,
+                    x=0, bgcolor="rgba(0,0,0,0)"),
     )
-    # One axis title, under the bottom row. Repeating it on every panel put a
-    # "Mean WIS" directly beneath each upper panel, colliding with the subplot
-    # title of the row below.
-    if by_horizon and n_rows > 1:
-        # Keep the title under the bottom row only; on upper rows it collided
-        # with the subplot title beneath it.
-        last_row_start = (n_rows - 1) * n_cols
-        for idx in range(last_row_start):
-            axis = "xaxis" if idx == 0 else f"xaxis{idx + 1}"
-            if axis in fig.layout:
-                fig.layout[axis].update(title_text="")
+    # One axis title, under the bottom row. Repeating it on every panel put the
+    # title directly beneath each upper panel, colliding with the subplot title
+    # of the row below.
+    for idx in range(n_rows - 1):
+        axis = "xaxis" if idx == 0 else f"xaxis{idx + 1}"
+        if axis in fig.layout:
+            fig.layout[axis].update(title_text="")
     return fig
