@@ -372,6 +372,21 @@ def _epistorm_checkbox(prefix: str, hub_label: str, options: list[str], epistorm
     )
 
 
+def _apply_decomp_epistorm(key: str, options: list[str], epistorm: list[str],
+                           fallback: list[str]) -> None:
+    """
+    Point the WIS-decomposition picker at the Epistorm models, or back.
+
+    Runs as a checkbox callback, which Streamlit executes before the rerun, so
+    writing the multiselect's key here is what the widget actually picks up.
+    Unticking restores the default model rather than clearing: this picker
+    drives a single chart, and an empty one leaves nothing on screen.
+    """
+    on = st.session_state.get(f"{key}_epistorm", False)
+    st.session_state[key] = ([m for m in epistorm if m in options] if on
+                             else list(fallback))
+
+
 # ── Findings sentences for the note boxes ──────────────────────────────────────
 
 def _note_box(description: str, findings: str = "") -> str:
@@ -1342,6 +1357,7 @@ offsets. Vintages start 2024-11-19.
                         _dec_kwargs = {}
                     else:
                         _dec_kwargs = {"default": _dec_default}
+                    _dec_epi = [m for m in wis_epistorm if m in _dec_options]
                     with dec_c3:
                         dec_models = st.multiselect(
                             "Models to decompose",
@@ -1349,6 +1365,15 @@ offsets. Vintages start 2024-11-19.
                             key=_dec_key,
                             placeholder="Choose at least one model",
                             **_dec_kwargs,
+                        )
+                        st.checkbox(
+                            "Select Epistorm models only" if _dec_epi
+                            else "Select Epistorm models only (none scored here)",
+                            value=False,
+                            key=f"{_dec_key}_epistorm",
+                            on_change=_apply_decomp_epistorm,
+                            args=(_dec_key, _dec_options, _dec_epi, _dec_default),
+                            disabled=not _dec_epi,
                         )
                     if _dec_df.empty:
                         st.info(f"No scores for {_dec_label}.")
