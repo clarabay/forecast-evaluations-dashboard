@@ -28,6 +28,12 @@ HIGHLIGHT_RED  = "#C44E52"   # muted brick; #D62728 read as harsh beside the tea
 HIGHLIGHT_TEAL = TEAL
 HIGHLIGHT_BLUE = "#1F4E99"
 
+# WIS decomposition. Deliberately muted and outside the highlight trio above,
+# which colours the model labels on the same chart.
+WIS_DISPERSION_COLOR = "#AEB6BD"
+WIS_UNDER_COLOR      = "#5B8FA8"
+WIS_OVER_COLOR       = "#D98E5A"
+
 # The "as of forecast date" observed line. Deliberately not in SET2_PALETTE,
 # so it can never be confused with a model median, and not black, so it reads
 # as a sibling of the current observed line rather than as the same series.
@@ -997,5 +1003,115 @@ def build_coverage_calibration(
         margin=dict(l=65, r=30, t=50, b=60),
         height=height,
         width=width,
+    )
+    return fig
+
+
+_WIS_PARTS = [
+    ("wis_dispersion",      "Dispersion",      WIS_DISPERSION_COLOR),
+    ("wis_underprediction", "Underprediction", WIS_UNDER_COLOR),
+    ("wis_overprediction",  "Overprediction",  WIS_OVER_COLOR),
+]
+
+WIS_DECOMP_COLS = [c for c, _, _ in _WIS_PARTS]
+
+
+def build_wis_decomposition(
+    wis_df: pd.DataFrame,
+    highlight_colors: dict[str, str] | None = None,
+    by_horizon: bool = True,
+) -> go.Figure:
+    """Stacked bars splitting mean WIS into its three terms, one bar per model.
+
+    WIS is a sum of a spread penalty and the two ways a forecast can miss, so
+    two models with the same score can be wrong in opposite ways: one too wide,
+    one confidently off. The stack shows which, and the segments add back to the
+    total because the components are scaled by the same 1/11.5 as the score.
+
+    Sorted by total so the order matches the boxplot above: best at the top.
+    """
+    if wis_df.empty or not set(WIS_DECOMP_COLS).issubset(wis_df.columns):
+        return go.Figure()
+
+    highlight_colors = dict(highlight_colors or {})
+
+    def _panel(fig, df, row, col, show_legend):
+        means = df.groupby("model", observed=True)[WIS_DECOMP_COLS].mean()
+        means = means.dropna(how="all")
+        if means.empty:
+            return []
+        means["_total"] = means.sum(axis=1)
+        means = means.sort_values("_total", ascending=False)
+        order = means.index.tolist()
+        for key, label, colour in _WIS_PARTS:
+            fig.add_trace(go.Bar(
+                x=means[key].values, y=order,
+                orientation="h",
+                name=label,
+                marker=dict(color=colour, line=dict(width=0)),
+                legendgroup=label,
+                showlegend=show_legend,
+                hovertemplate=("<b>%{y}</b><br>" + label +
+                               ": %{x:,.3f}<extra></extra>"),
+            ), row=row, col=col)
+        return order
+
+    def _ticktext(order):
+        return [
+            f"<b><i><span style='color:{highlight_colors[m]}'>{m}</span></i></b>"
+            if m in highlight_colors
+            else f"<span style='color:#aaaaaa'>{m}</span>"
+            for m in order
+        ]
+
+    n_models = wis_df["model"].nunique()
+    per_model_px = 22
+
+    if by_horizon:
+        height = max(per_model_px * n_models * 2 + 220, 360)
+        v_spacing = min(0.18, 90 / height)
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=[f"Horizon: {h} week{'s' if h != 1 else ''}" for h in range(4)],
+            horizontal_spacing=0.10, vertical_spacing=v_spacing,
+        )
+        positions = {0: (1, 1), 1: (1, 2), 2: (2, 1), 3: (2, 2)}
+        first = True
+        for horizon in range(4):
+            row, col = positions[horizon]
+            h_df = wis_df[wis_df["horizon"] == horizon]
+            if h_df.empty:
+                continue
+            order = _panel(fig, h_df, row, col, show_legend=first)
+            if not order:
+                continue
+            first = False
+            axis = "yaxis" if (row == 1 and col == 1) else f"yaxis{(row - 1) * 2 + col}"
+            fig.layout[axis].update(
+                tickmode="array", tickvals=order, ticktext=_ticktext(order),
+                tickfont=dict(size=11, color="dimgray"),
+                showgrid=False, linecolor="#cccccc",
+            )
+    else:
+        height = max(per_model_px * n_models + 180, 260)
+        fig = make_subplots(rows=1, cols=1)
+        order = _panel(fig, wis_df, 1, 1, show_legend=True)
+        fig.layout["yaxis"].update(
+            tickmode="array", tickvals=order, ticktext=_ticktext(order),
+            tickfont=dict(size=11, color="dimgray"),
+            showgrid=False, linecolor="#cccccc",
+        )
+
+    fig.update_xaxes(title_text="Mean WIS", title_standoff=12,
+                     showgrid=True, gridcolor="#eeeeee", linecolor="#cccccc",
+                     rangemode="tozero")
+    fig.update_layout(
+        **_BASE_LAYOUT,
+        title_text="",
+        barmode="stack",
+        hovermode="closest",
+        height=height,
+        margin=dict(l=220, r=30, t=50, b=70),
+        legend=dict(orientation="h", y=1.02, x=0, bgcolor="rgba(0,0,0,0)"),
     )
     return fig

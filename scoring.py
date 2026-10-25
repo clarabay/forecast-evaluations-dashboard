@@ -90,7 +90,15 @@ def compute_wis_scores(
 
     wide = _pivot_wide(merged)
     obs = wide["observed"].values
-    wis = np.zeros(len(wide))
+
+    # The three terms are accumulated separately rather than summed in place:
+    # weighted by alpha/2, (2/alpha) cancels, so each interval contributes its
+    # raw shortfall to under/over and half its width times alpha to dispersion.
+    # They are scaled by the same 1/11.5 as the total, so the three columns add
+    # back to wis exactly.
+    disp  = np.zeros(len(wide))
+    under = np.zeros(len(wide))
+    over  = np.zeros(len(wide))
 
     for q_lo, q_hi, alpha in _PI_PAIRS:
         if q_lo not in wide.columns or q_hi not in wide.columns:
@@ -98,18 +106,25 @@ def compute_wis_scores(
         lo = wide[q_lo].values.astype(float)
         hi = wide[q_hi].values.astype(float)
         valid = ~(np.isnan(lo) | np.isnan(hi))
-        dispersion = hi - lo
-        underpred  = (2.0 / alpha) * np.maximum(lo - obs, 0)
-        overpred   = (2.0 / alpha) * np.maximum(obs - hi, 0)
-        wis += np.where(valid, (dispersion + underpred + overpred) * (alpha / 2.0), 0.0)
+        disp  += np.where(valid, (hi - lo) * (alpha / 2.0), 0.0)
+        under += np.where(valid, np.maximum(lo - obs, 0), 0.0)
+        over  += np.where(valid, np.maximum(obs - hi, 0), 0.0)
 
     if 0.5 in wide.columns:
         median = wide[0.5].values.astype(float)
-        wis += 0.5 * np.abs(median - obs)
+        # The median term is a pure miss, so it joins the side it missed on:
+        # an observation below the median means the forecast ran high.
+        med_gap = 0.5 * np.abs(median - obs)
+        over  += np.where(obs < median, med_gap, 0.0)
+        under += np.where(obs > median, med_gap, 0.0)
 
-    wide["wis"] = wis / 11.5
+    wide["wis_dispersion"]      = disp / 11.5
+    wide["wis_underprediction"] = under / 11.5
+    wide["wis_overprediction"]  = over / 11.5
+    wide["wis"] = (disp + under + over) / 11.5
 
-    return wide[_GROUP_KEYS + ["wis"]].copy()
+    return wide[_GROUP_KEYS + ["wis", "wis_dispersion",
+                               "wis_underprediction", "wis_overprediction"]].copy()
 
 
 def add_wis_ratio(

@@ -97,6 +97,9 @@ class HubConfig:
     # All-locations panel geometry. Metrocast carries 110 sub-state locations
     # against ~53 states elsewhere, so it needs taller panels and a tighter gap
     # to stay legible over a 19-row grid.
+    # Upper horizon kept at fetch time. None leaves the file untouched; the
+    # other hubs submit 0-3 anyway, metrocast now allows more.
+    max_horizon: Optional[int] = None
     panel_cols: int = 6
     panel_row_px: int = 160
     panel_gap_px: int = 28
@@ -269,6 +272,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         # 110 locations: a wider grid keeps the page from running to 4000px,
         # taller rows give the y-axis room, and a small gap stops the labels
         # floating away from their panels.
+        max_horizon      = 3,
         panel_cols       = 7,
         panel_row_px     = 215,
         panel_gap_px     = 22,
@@ -1097,6 +1101,46 @@ def _disk_cache_path(hub: HubConfig, model: str, date_str: str) -> Path:
     return DISK_CACHE_DIR / hub.cache_dir / model / f"{date_str}.parquet"
 
 
+# Quantile levels synthesised from sample trajectories. This is the union of
+# what the app consumes: the fan chart's 1/5/25/75/95/99 and the median, plus
+# the pairs the coverage tab needs at 0.5 +/- level/200 for every level in
+# plots._PI_LEVELS. With 100 samples per task each of these is well determined.
+_SAMPLE_QUANTILE_LEVELS = (
+    0.01, 0.025, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45,
+    0.50,
+    0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 0.975, 0.99,
+)
+
+
+def _quantiles_from_samples(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse sample trajectories into the quantile rows the app expects.
+
+    Metrocast's 2026-27 round switched to sample output only: 100 trajectories
+    per (reference_date, target, location), with the sample id identifying a
+    trajectory across target_end_dates. Nothing downstream understands samples
+    — the fan chart, WIS and coverage are all quantile-based — so they are
+    summarised here, at the edge, and the rest of the app is unchanged.
+
+    Quantiles are taken across trajectories within each target week. That is
+    the right marginal for interval coverage and WIS; it deliberately discards
+    the within-trajectory correlation, which this dashboard never plots.
+    """
+    keys = ["location", "reference_date", "target_end_date", "horizon"]
+    keys = [k for k in keys if k in df.columns]
+    g = df.groupby(keys, observed=True)["value"]
+    out = (g.quantile(list(_SAMPLE_QUANTILE_LEVELS))
+             .rename("value")
+             .reset_index())
+    # groupby.quantile names the new level after its position; it is the only
+    # column that is neither a key nor the value.
+    lvl = [c for c in out.columns if c not in keys and c != "value"]
+    if len(lvl) != 1:
+        return pd.DataFrame()
+    out = out.rename(columns={lvl[0]: "output_type_id"})
+    out["output_type"] = "quantile"
+    return out
+
+
 class _ForecastUnavailable(Exception):
     """Raised inside the cached fetch so a failed fetch is never cached.
 
@@ -1168,25 +1212,49 @@ def _fetch_forecast_cached(hub_label: str, model: str, date_str: str) -> pd.Data
             f"{model} {date_str}: missing columns "
             f"{sorted(required - set(df.columns))}")
 
-    # Quantiles only. A submission may carry sample trajectories alongside (or
-    # instead of) quantiles; those share the file but have a non-numeric
-    # output_type_id and a different row meaning, so they are dropped here
-    # rather than being coerced to NaN further down.
-    df = df[
-        (df["output_type"].astype(str) == "quantile") &
-        (df["target"].astype(str) == hub.target)
-    ].copy()
-
+    df = df[df["target"].astype(str) == hub.target].copy()
     if df.empty:
         return df
 
-    df["model"]          = model
-    df["reference_date"]  = pd.to_datetime(df["reference_date"])
-    df["target_end_date"] = pd.to_datetime(df["target_end_date"])
-    df["location"]        = df["location"].astype(str).apply(_normalize_fips)
-    df["output_type_id"]  = pd.to_numeric(df["output_type_id"], errors="coerce")
-    df["horizon"]         = pd.to_numeric(df["horizon"], errors="coerce")
+    df["reference_date"]  = pd.to_datetime(df["reference_date"], errors="coerce")
+    df["target_end_date"] = pd.to_datetime(df["target_end_date"], errors="coerce")
     df["value"]           = pd.to_numeric(df["value"], errors="coerce")
+
+    # Metrocast's sample round carries no horizon task id — it is implied by the
+    # two dates — so derive it when absent rather than losing every row to the
+    # numeric coercion below.
+    if "horizon" in df.columns:
+        df["horizon"] = pd.to_numeric(df["horizon"], errors="coerce")
+    else:
+        df["horizon"] = ((df["target_end_date"] - df["reference_date"])
+                         .dt.days // 7)
+
+    # Quantiles where the submission has them. Where it has only sample
+    # trajectories, summarise those into the same quantile shape; a file
+    # carrying both is taken at its quantiles, which are the modeller's own.
+    kind = df["output_type"].astype(str)
+    quant = df[kind == "quantile"]
+    if quant.empty:
+        samples = df[kind == "sample"].dropna(subset=["value"])
+        if samples.empty:
+            return df.iloc[:0]
+        df = _quantiles_from_samples(samples)
+        if df.empty:
+            raise _ForecastUnavailable(
+                f"{model} {date_str}: sample rows could not be summarised")
+        df["target"] = hub.target
+    else:
+        df = quant.copy()
+
+    # Horizons beyond the window the dashboard plots are dropped here so the
+    # chart, WIS and coverage all see the same rows. Metrocast opened longer
+    # horizons for 2026-27; the rest of the app assumes 0-3 throughout.
+    if hub.max_horizon is not None:
+        df = df[df["horizon"].between(0, hub.max_horizon)]
+
+    df["model"]          = model
+    df["location"]       = df["location"].astype(str).apply(_normalize_fips)
+    df["output_type_id"] = pd.to_numeric(df["output_type_id"], errors="coerce")
     df = df.dropna(subset=["output_type_id", "value"])
 
     try:

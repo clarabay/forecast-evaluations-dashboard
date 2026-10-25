@@ -35,6 +35,7 @@ from data_loader import (
 )
 from scoring import compute_coverage, compute_wis, summarize_coverage, summarize_wis
 from plots import (
+    WIS_DECOMP_COLS,
     HIGHLIGHT_BLUE,
     HIGHLIGHT_RED,
     HIGHLIGHT_TEAL,
@@ -45,6 +46,7 @@ from plots import (
     build_fan_chart,
     build_observed_chart,
     build_wis_boxplots,
+    build_wis_decomposition,
 )
 
 # ── Page config ────────────────────────────────────────────────────────────────
@@ -1242,6 +1244,52 @@ offsets. Vintages start 2024-11-19.
                     baseline_label=hub.baseline,
                 )
                 st.plotly_chart(wis_fig, use_container_width=True, config={"displayModeBar": False})
+
+                # ── WIS decomposition ──────────────────────────────────────
+                st.markdown("##### WIS decomposition")
+                if set(WIS_DECOMP_COLS).issubset(plot_wis.columns):
+                    st.markdown(
+                        "<p style='color:#666; font-size:0.86rem; margin:-6px 0 10px;'>"
+                        "WIS splits into the width of a model's intervals and the two "
+                        "ways it can miss. Two models can score alike for opposite "
+                        "reasons — one too wide, one confidently wrong — and the "
+                        "segments below add back to the mean WIS.</p>",
+                        unsafe_allow_html=True,
+                    )
+                    # One model by default: every model at once is 50+ stacked
+                    # bars per panel, which is unreadable and buries the
+                    # comparison the chart exists to make.
+                    _dec_options = sorted(plot_wis["model"].astype(str).unique())
+                    _dec_default = ([hub.ensemble_model]
+                                    if hub.ensemble_model in _dec_options
+                                    else _dec_options[:1])
+                    _dec_col, _ = st.columns([2, 1])
+                    with _dec_col:
+                        dec_models = st.multiselect(
+                            "Models to decompose",
+                            options=_dec_options,
+                            default=_dec_default,
+                            key=f"wis_decomp_models_{selected_hub_label}",
+                            placeholder="Choose at least one model",
+                        )
+                    if dec_models:
+                        decomp_fig = build_wis_decomposition(
+                            plot_wis[plot_wis["model"].astype(str).isin(dec_models)],
+                            highlight_colors=wis_colors,
+                            by_horizon=wis_by_horizon,
+                        )
+                        st.plotly_chart(decomp_fig, use_container_width=True,
+                                        config={"displayModeBar": False})
+                    else:
+                        st.caption("Select a model to see its decomposition.")
+                else:
+                    # The columns arrived with this feature; scores built before
+                    # it do not carry them and the action has to run once.
+                    st.info(
+                        "The decomposition needs score columns added after the "
+                        "current `precomputed/` files were built. Re-run the "
+                        "**Update precomputed scores** action and it will appear."
+                    )
 
                 wis_table = summarize_wis(plot_wis)
                 if not wis_table.empty:
