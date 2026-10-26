@@ -124,6 +124,10 @@ class HubConfig:
                            # oldest first; see hub_ensemble_model()
     default_location: Optional[str] = None  # location code the fan chart opens on;
                            # falls back to US, then the first location
+    log_offset: float = 1.0  # added before the log transform in the log-scale
+                           # WIS. 1 suits admission counts; a proportion or a
+                           # percentage needs an offset near its own floor, or
+                           # the transform barely bends the scale at all.
 
 
 # Epistorm submissions differ by target: the flu model names carry FLUH/Flu
@@ -210,6 +214,9 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         delphi_scale       = 0.01,   # NSSP percent -> hub proportion
         y_label            = "Proportion ED Visits",
         unit_noun          = "proportion ED visits",
+        # A proportion runs 0 to about 0.06, so the usual +1 offset would swamp
+        # the data and leave the log scale all but linear over its range.
+        log_offset         = 0.001,
         ensemble_model     = "FluSight-ensemble",
         # More current than the hub's target file, which trails by weeks out of
         # season. Same underlying NSSP data, so the two agree where they overlap.
@@ -282,6 +289,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
         panel_gap_px     = 22,
         y_label          = "% ED Visits (Flu)",
         unit_noun        = "percent of ED visits",
+        log_offset       = 0.001,
         ensemble_model   = "epiENGAGE-ensemble_mean",
         # epiENGAGE-ensemble_mean stopped after 2026-05-23; the 2026-27 season
         # replaced it with a short- and a long-horizon ensemble, and the short

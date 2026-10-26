@@ -62,9 +62,64 @@ def _pivot_wide(merged: pd.DataFrame) -> pd.DataFrame:
 _RATIO_KEYS = ["location", "horizon", "reference_date", "target_end_date"]
 
 
+def _log_shift(x: np.ndarray, offset: float) -> np.ndarray:
+    """log(offset + x) with negatives clipped to zero.
+
+    Quantiles and counts should never be negative, but a model occasionally
+    submits a small negative lower quantile, and the log of anything at or
+    below zero is a nan or -inf that would silently void the whole row.
+
+    The offset sets where the transform stops being logarithmic and goes
+    roughly linear, so it belongs near the floor of the target's own scale:
+    1 for admission counts, far smaller for a proportion or a percentage.
+    """
+    return np.log(np.clip(x, 0.0, None) + offset)
+
+
+def _wis_terms(wide: pd.DataFrame, obs: np.ndarray, transform=None):
+    """
+    The three WIS components for one scale, each already divided by 11.5.
+
+    They are accumulated separately rather than summed in place: weighted by
+    alpha/2, the (2/alpha) cancels, so each interval contributes its raw
+    shortfall to under/over and half its width times alpha to dispersion. All
+    three carry the same 1/11.5, so they add back to the total exactly.
+
+    `transform` applies to the quantiles and the observation alike before any
+    arithmetic; it must be monotone, or the intervals would stop being ordered.
+    """
+    f = transform if transform is not None else (lambda x: x)
+    o = f(obs)
+
+    disp  = np.zeros(len(wide))
+    under = np.zeros(len(wide))
+    over  = np.zeros(len(wide))
+
+    for q_lo, q_hi, alpha in _PI_PAIRS:
+        if q_lo not in wide.columns or q_hi not in wide.columns:
+            continue
+        lo = f(wide[q_lo].values.astype(float))
+        hi = f(wide[q_hi].values.astype(float))
+        valid = ~(np.isnan(lo) | np.isnan(hi))
+        disp  += np.where(valid, (hi - lo) * (alpha / 2.0), 0.0)
+        under += np.where(valid, np.maximum(lo - o, 0), 0.0)
+        over  += np.where(valid, np.maximum(o - hi, 0), 0.0)
+
+    if 0.5 in wide.columns:
+        median = f(wide[0.5].values.astype(float))
+        # The median term is a pure miss, so it joins the side it missed on:
+        # an observation below the median means the forecast ran high.
+        med_gap = 0.5 * np.abs(median - o)
+        over  += np.where(o < median, med_gap, 0.0)
+        under += np.where(o > median, med_gap, 0.0)
+
+    return disp / 11.5, under / 11.5, over / 11.5
+
+
 def compute_wis_scores(
     forecasts: pd.DataFrame,
     truth: pd.DataFrame,
+    log_offset: float = 1.0,
 ) -> pd.DataFrame:
     """
     Vectorized WIS for every (model, location, horizon, reference_date, target_end_date).
@@ -89,41 +144,26 @@ def compute_wis_scores(
         return pd.DataFrame()
 
     wide = _pivot_wide(merged)
-    obs = wide["observed"].values
+    obs = wide["observed"].values.astype(float)
 
-    # The three terms are accumulated separately rather than summed in place:
-    # weighted by alpha/2, (2/alpha) cancels, so each interval contributes its
-    # raw shortfall to under/over and half its width times alpha to dispersion.
-    # They are scaled by the same 1/11.5 as the total, so the three columns add
-    # back to wis exactly.
-    disp  = np.zeros(len(wide))
-    under = np.zeros(len(wide))
-    over  = np.zeros(len(wide))
+    disp, under, over = _wis_terms(wide, obs)
+    wide["wis_dispersion"]      = disp
+    wide["wis_underprediction"] = under
+    wide["wis_overprediction"]  = over
+    wide["wis"] = disp + under + over
 
-    for q_lo, q_hi, alpha in _PI_PAIRS:
-        if q_lo not in wide.columns or q_hi not in wide.columns:
-            continue
-        lo = wide[q_lo].values.astype(float)
-        hi = wide[q_hi].values.astype(float)
-        valid = ~(np.isnan(lo) | np.isnan(hi))
-        disp  += np.where(valid, (hi - lo) * (alpha / 2.0), 0.0)
-        under += np.where(valid, np.maximum(lo - obs, 0), 0.0)
-        over  += np.where(valid, np.maximum(obs - hi, 0), 0.0)
+    # The same score on the log scale, with an offset matched to the target's
+    # own units. Transforming the quantiles and the
+    # observation before scoring (Bosse et al. 2023) turns WIS from an absolute
+    # into a relative error measure, so a miss of 50 admissions counts the same
+    # at a peak as in the off-season, and one blown-up location stops dominating
+    # a model's average. Kept alongside the natural-scale score rather than
+    # replacing it: they answer different questions and can rank differently.
+    log_disp, log_under, log_over = _wis_terms(
+        wide, obs, transform=lambda x: _log_shift(x, log_offset))
+    wide["wis_log"] = log_disp + log_under + log_over
 
-    if 0.5 in wide.columns:
-        median = wide[0.5].values.astype(float)
-        # The median term is a pure miss, so it joins the side it missed on:
-        # an observation below the median means the forecast ran high.
-        med_gap = 0.5 * np.abs(median - obs)
-        over  += np.where(obs < median, med_gap, 0.0)
-        under += np.where(obs > median, med_gap, 0.0)
-
-    wide["wis_dispersion"]      = disp / 11.5
-    wide["wis_underprediction"] = under / 11.5
-    wide["wis_overprediction"]  = over / 11.5
-    wide["wis"] = (disp + under + over) / 11.5
-
-    return wide[_GROUP_KEYS + ["wis", "wis_dispersion",
+    return wide[_GROUP_KEYS + ["wis", "wis_log", "wis_dispersion",
                                "wis_underprediction", "wis_overprediction"]].copy()
 
 
@@ -143,9 +183,12 @@ def add_wis_ratio(
     if scores.empty:
         return pd.DataFrame()
 
-    baseline = scores[scores["model"] == baseline_model][_RATIO_KEYS + ["wis"]].rename(
-        columns={"wis": "wis_baseline"}
-    )
+    # The log-scale score rides along so the pairwise comparison can be run on
+    # either scale from the same table; scores built before it exists simply
+    # do not carry the column.
+    val_cols = ["wis"] + (["wis_log"] if "wis_log" in scores.columns else [])
+    baseline = (scores[scores["model"] == baseline_model][_RATIO_KEYS + val_cols]
+                .rename(columns={c: f"{c}_baseline" for c in val_cols}))
     df_ratio = scores.merge(baseline, on=_RATIO_KEYS, how="inner")
     df_ratio["wis_ratio"] = df_ratio["wis"] / df_ratio["wis_baseline"]
     return df_ratio
@@ -155,17 +198,22 @@ def compute_wis(
     forecasts: pd.DataFrame,
     truth: pd.DataFrame,
     baseline_model: str = "FluSight-baseline",
+    log_offset: float = 1.0,
 ) -> pd.DataFrame:
     """
     Vectorized WIS and WIS ratio for every (model, location, horizon, reference_date, target_end_date).
     Returns DataFrame with columns: model, location, horizon, reference_date, target_end_date, wis, wis_ratio.
     """
-    return add_wis_ratio(compute_wis_scores(forecasts, truth), baseline_model)
+    return add_wis_ratio(compute_wis_scores(forecasts, truth, log_offset),
+                         baseline_model)
 
 
-def pairwise_relative_wis(scores: pd.DataFrame) -> pd.Series:
+def pairwise_relative_wis(scores: pd.DataFrame, value_col: str = "wis") -> pd.Series:
     """
     Pairwise relative WIS, one value per model, with the baseline at 1.0.
+
+    `value_col` selects the scale: "wis" for the natural-scale score, "wis_log"
+    for the same comparison run on log-transformed forecasts and observations.
 
     Averaging each model's own baseline ratios compares models on different sets
     of forecasts — no task at all is shared by every model in the flu hub, so
@@ -182,18 +230,19 @@ def pairwise_relative_wis(scores: pd.DataFrame) -> pd.Series:
     Values below 1 beat the baseline. Returns an empty Series if the input has no
     usable overlap.
     """
-    if scores.empty:
+    base_col = f"{value_col}_baseline"
+    if scores.empty or value_col not in scores.columns or base_col not in scores.columns:
         return pd.Series(dtype=float)
 
     task_keys = _RATIO_KEYS
     wide = scores.pivot_table(index=task_keys, columns="model",
-                              values="wis", aggfunc="mean", observed=True)
+                              values=value_col, aggfunc="mean", observed=True)
     wide.columns = [str(c) for c in wide.columns]
 
-    # The baseline's WIS per task, taken from any row for that task.
-    base = (scores[task_keys + ["wis_baseline"]]
+    # The baseline's score per task, taken from any row for that task.
+    base = (scores[task_keys + [base_col]]
             .drop_duplicates(subset=task_keys)
-            .set_index(task_keys)["wis_baseline"])
+            .set_index(task_keys)[base_col])
     BASE = "__baseline__"
     wide[BASE] = base.reindex(wide.index)
 
@@ -250,6 +299,12 @@ def summarize_wis(scores: pd.DataFrame) -> pd.DataFrame:
     # pairwise Series is keyed by plain strings while this index is categorical,
     # and letting pandas align the two loses the index name.
     out.insert(1, "Pairwise rel. WIS", out.index.astype(str).map(pairwise_relative_wis(scores)))
+    # Only where the scores carry the log-scale column: tables precomputed
+    # before it was added have no wis_log, and a column of dashes helps nobody.
+    if "wis_log" in scores.columns and "wis_log_baseline" in scores.columns:
+        out.insert(2, "Pairwise rel. WIS (log)",
+                   out.index.astype(str).map(
+                       pairwise_relative_wis(scores, value_col="wis_log")))
     out = out.sort_values("Median WIS ratio").reset_index()
     out = out.rename(columns={"model": "Model"})
     out.insert(0, "Rank", range(1, len(out) + 1))

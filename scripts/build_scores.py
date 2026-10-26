@@ -105,7 +105,7 @@ def build_hub(hub_label: str, limit_dates: int | None = None) -> dict:
         else:
             fc = fc.copy()
             fc["horizon"] = fc["horizon"].astype(int)
-            w = scoring.compute_wis_scores(fc, truth)
+            w = scoring.compute_wis_scores(fc, truth, log_offset=hub.log_offset)
             if not w.empty:
                 wis_parts.append(w)
             c = scoring.compute_coverage(fc, truth)

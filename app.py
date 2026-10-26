@@ -1212,7 +1212,9 @@ offsets. Vintages start 2024-11-19.
                         if not wis_all_locs:
                             fc_wis = fc_wis[fc_wis["location"] == wis_location]
                         with st.spinner("Computing WIS scores…"):
-                            wis_results = compute_wis(fc_wis, truth_df, baseline_model=hub.baseline)
+                            wis_results = compute_wis(fc_wis, truth_df,
+                                                      baseline_model=hub.baseline,
+                                                      log_offset=hub.log_offset)
                         st.session_state[f"_wis_results_{selected_hub_label}"] = wis_results
                     else:
                         st.session_state[f"_wis_results_{selected_hub_label}"] = pd.DataFrame()
@@ -1419,16 +1421,21 @@ offsets. Vintages start 2024-11-19.
                     # Constrained to the left two thirds — six narrow columns
                     # stretched across the full page left a lot of dead space.
                     wis_table_col, _ = st.columns([2, 1])
+                    # Filtered to the columns actually present: the log-scale
+                    # pairwise column is absent from scores built before it
+                    # existed, and Styler.format raises on a key it cannot find.
+                    _wis_fmt = {k: v for k, v in {
+                        "Median WIS ratio":        "{:.3f}",
+                        "Pairwise rel. WIS":       "{:.3f}",
+                        "Pairwise rel. WIS (log)": "{:.3f}",
+                        "Beats baseline":          "{:.1f}%",
+                        "Forecasts":               "{:,.0f}",
+                    }.items() if k in wis_table.columns}
                     with wis_table_col:
                         st.dataframe(
                             wis_table.style
                             .apply(_style_highlight, axis=1)
-                            .format({
-                                "Median WIS ratio":  "{:.3f}",
-                                "Pairwise rel. WIS": "{:.3f}",
-                                "Beats baseline":    "{:.1f}%",
-                                "Forecasts":         "{:,.0f}",
-                            }, na_rep="—"),
+                            .format(_wis_fmt, na_rep="—"),
                             use_container_width=True,
                             hide_index=True,
                         )
@@ -1464,9 +1471,19 @@ comparison avoids that: every pair is judged on its own shared tasks, so a model
 coverage no longer gets credit for having picked an easier slice. Expect it to disagree with
 the median ratio — when it does, the pairwise value is the more trustworthy of the two.
 
-Two caveats. It is **relative to the current selection**, so adding or removing models can
-shift the numbers; and it is unstable for very small selections, since there are few opponents
-to average over.
+**Pairwise rel. WIS (log)** — the same pairwise comparison, but run on forecasts and
+observations transformed by `log({hub.log_offset:g} + x)` before scoring. On the natural scale WIS is an
+absolute error, so peak weeks and high-count locations dominate a model's average; on the log
+scale it is closer to a relative error, and a miss counts the same whether the level is high
+or low. Expect the two to disagree where a model is strong at the peak and weak in the
+off-season, or vice versa. The offset sets where the transform stops bending and goes roughly
+linear, so it is matched to the target: 1 for admission counts, 0.001 for the ED-visit
+proportion and percentage targets, where a +1 would swamp the data and leave the log scale
+all but linear across its whole range.
+
+Two caveats. Both are **relative to the current selection**, so adding or removing models can
+shift the numbers; and they are unstable for very small selections, since there are few
+opponents to average over.
 
 **Beats baseline** — the share of that model's individual forecasts that scored better than
 the baseline. A model can post a strong median yet win only slightly more than half its
