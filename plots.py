@@ -1028,8 +1028,11 @@ def build_wis_decomposition(
     highlight_colors: dict[str, str] | None = None,
     by_horizon: bool = True,
     value_label: str = "Mean WIS",
+    group_col: str = "model",
+    label_map: dict[str, str] | None = None,
+    normalize: bool = False,
 ) -> go.Figure:
-    """Stacked bars splitting mean WIS into its three terms, one bar per model.
+    """Stacked bars splitting mean WIS into its three terms, one bar per group.
 
     WIS is a sum of a spread penalty and the two ways a forecast can miss, so
     two models with the same score can be wrong in opposite ways: one too wide,
@@ -1038,41 +1041,65 @@ def build_wis_decomposition(
 
     Horizons stack vertically, one per row, each sorted by its own WIS with
     best at the top.
+
+    `group_col` picks what a bar stands for: models compared at one location,
+    or locations compared for one model. `label_map` renames the raw values for
+    display, which is how FIPS codes become place names. `normalize` scales each
+    bar to its own total so the bars show composition instead of magnitude —
+    the only way a 50-state view is readable, since WIS carries the units of the
+    outcome and California would otherwise dwarf Wyoming.
     """
     if wis_df.empty or not set(WIS_DECOMP_COLS).issubset(wis_df.columns):
         return go.Figure()
 
     highlight_colors = dict(highlight_colors or {})
+    label_map = dict(label_map or {})
 
     def _panel(fig, df, row, show_legend):
-        means = (df.groupby("model", observed=True)[WIS_DECOMP_COLS]
+        means = (df.groupby(group_col, observed=True)[WIS_DECOMP_COLS]
                    .mean().dropna(how="all"))
         if means.empty:
             return []
         # Each panel sorts itself. A single order taken from the overall
         # totals left the short horizons visibly out of order, because the
         # long ones score several times higher and dominated the average.
-        order = (means.assign(_t=means.sum(axis=1))
-                      .sort_values("_t", ascending=False).index.tolist())
+        totals = means.sum(axis=1)
+        order = totals.sort_values(ascending=False).index.tolist()
         means = means.reindex(order)
+        totals = totals.reindex(order)
+        # The order stays on the raw totals even when normalized: shares all
+        # sum to 1, so sorting by them would be arbitrary, and this keeps the
+        # worst-scoring places together at the bottom.
+        shown = means.div(totals.replace(0, np.nan), axis=0) if normalize else means
+        labels = [label_map.get(g, str(g)) for g in order]
         for key, label, colour in _WIS_PARTS:
+            # Normalized bars lose the magnitude, so the hover carries the
+            # group's raw total alongside the share.
+            hover = ("<b>%{y}</b><br>" + label +
+                     (": %{x:.1%} of %{customdata:,.3f}<extra></extra>"
+                      if normalize else ": %{x:,.3f}<extra></extra>"))
             fig.add_trace(go.Bar(
-                x=means[key].fillna(0).values, y=order,
+                x=shown[key].fillna(0).values, y=labels,
                 orientation="h",
                 name=label,
                 marker=dict(color=colour, line=dict(width=0)),
                 legendgroup=label,
                 showlegend=show_legend,
-                hovertemplate=("<b>%{y}</b><br>" + label +
-                               ": %{x:,.3f}<extra></extra>"),
+                customdata=totals.values if normalize else None,
+                hovertemplate=hover,
             ), row=row, col=1)
-        return order
+        return labels
+
+    # The pale grey means "not one of the highlighted models". With nothing
+    # highlighted — every by-location view — it would fade the whole axis for
+    # no reason, so the labels stay readable instead.
+    _plain = "#aaaaaa" if highlight_colors else "#555555"
 
     def _ticktext(order):
         return [
             f"<b><i><span style='color:{highlight_colors[m]}'>{m}</span></i></b>"
             if m in highlight_colors
-            else f"<span style='color:#aaaaaa'>{m}</span>"
+            else f"<span style='color:{_plain}'>{m}</span>"
             for m in order
         ]
 
@@ -1084,7 +1111,7 @@ def build_wis_decomposition(
             showgrid=False, linecolor="#cccccc",
         )
 
-    n_models = wis_df["model"].nunique()
+    n_models = wis_df[group_col].nunique()
     per_model_px = 22
     margin_t, margin_b = 86, 60
     # Height follows the content. A fixed floor per row padded a one-model,
@@ -1131,7 +1158,8 @@ def build_wis_decomposition(
 
     fig.update_xaxes(title_text=value_label, title_standoff=12,
                      showgrid=True, gridcolor="#eeeeee", linecolor="#cccccc",
-                     rangemode="tozero")
+                     rangemode="tozero",
+                     **(dict(tickformat=".0%", range=[0, 1]) if normalize else {}))
     fig.update_layout(
         **_BASE_LAYOUT,
         title_text="",

@@ -666,6 +666,7 @@ def render_hub(selected_hub_label: str) -> None:
     loc_names    = loc_df["location_name"].tolist()
     loc_fips     = loc_df["location"].tolist()
     name_to_fips = dict(zip(loc_names, loc_fips))
+    fips_to_name = dict(zip(loc_fips, loc_names))
 
     with st.spinner(""):
         eval_dates_pool = get_all_available_dates(selected_hub_label, all_models)
@@ -1290,116 +1291,200 @@ offsets. Vintages start 2024-11-19.
                         "WIS splits into the width of a model's intervals and the two "
                         "ways it can miss. Two models can score alike for opposite "
                         "reasons — one too wide, one confidently wrong — and the "
-                        "segments below add back to the total. Shown one location and "
-                        "one forecast date at a time, because WIS is measured in the "
-                        "units of the outcome and averaging across locations would "
-                        "mostly show the largest states.</p>",
+                        "segments below add back to the total. Compare models at a "
+                        "single location, or one model across every location — one "
+                        "forecast date at a time either way, because WIS is measured "
+                        "in the units of the outcome and pooling dates or places "
+                        "weights them by size.</p>",
                         unsafe_allow_html=True,
                     )
-                    dec_c1, dec_c2, dec_c3 = st.columns([1.2, 1.2, 2.6])
+                    _DEC_BY_MODEL = "Models at one location"
+                    _DEC_BY_LOC   = "Locations for one model"
+                    # The page cannot offer the by-location view without the
+                    # precomputed table: the fallback path scores only the one
+                    # location the page selector asked for.
+                    _dec_mode = (st.radio(
+                        "Compare", options=[_DEC_BY_MODEL, _DEC_BY_LOC],
+                        horizontal=True, label_visibility="collapsed",
+                        key=f"wis_decomp_mode_{selected_hub_label}",
+                    ) if not precomputed_wis.empty else _DEC_BY_MODEL)
 
-                    if precomputed_wis.empty:
-                        # Nothing to re-slice, so the chart follows the page
-                        # selectors instead of carrying its own.
-                        _dec_df = pd.DataFrame() if wis_all_locs else plot_wis
-                        _dec_label = _selection_label(
-                            eval_scope, eval_ref_dates, wis_all_locs, wis_loc_name)
-                    else:
-                        with dec_c1:
-                            _dec_loc_idx = (
-                                loc_names.index(wis_loc_name)
-                                if not wis_all_locs and wis_loc_name in loc_names
-                                else (loc_names.index("US") if "US" in loc_names else 0)
-                            )
-                            dec_loc_name = st.selectbox(
-                                "Location",
-                                options=loc_names,
-                                index=_dec_loc_idx,
-                                key=f"wis_decomp_loc_{selected_hub_label}",
-                            )
-                        with dec_c2:
-                            _dec_dates = sorted(
-                                pd.to_datetime(precomputed_wis["reference_date"])
-                                  .dt.strftime("%Y-%m-%d").unique(),
-                                reverse=True,
-                            )
-                            if _min_date:
-                                _dec_dates = [d for d in _dec_dates if d >= _min_date]
-                            _dec_date_idx = (
-                                _dec_dates.index(eval_ref_dates[0])
-                                if len(eval_ref_dates) == 1
-                                and eval_ref_dates[0] in _dec_dates
-                                else 0
-                            )
-                            dec_date = st.selectbox(
-                                "Forecast date",
-                                options=_dec_dates,
-                                index=_dec_date_idx,
-                                key=f"wis_decomp_date_{selected_hub_label}",
-                            )
-                        _dec_df = filter_scores(
-                            precomputed_wis,
-                            ref_dates=[dec_date],
-                            location=name_to_fips[dec_loc_name],
+                    if _dec_mode == _DEC_BY_LOC:
+                        lc1, lc2, lc3 = st.columns([1.8, 1.2, 1.2])
+                        _loc_dates = sorted(
+                            pd.to_datetime(precomputed_wis["reference_date"])
+                              .dt.strftime("%Y-%m-%d").unique(),
+                            reverse=True,
                         )
-                        _dec_df = _dec_df[_dec_df["model"] != hub.baseline]
-                        _dec_label = f"{dec_date} · {dec_loc_name}"
+                        if _min_date:
+                            _loc_dates = [d for d in _loc_dates if d >= _min_date]
+                        with lc2:
+                            loc_date = st.selectbox(
+                                "Forecast date", options=_loc_dates, index=0,
+                                key=f"wis_decomp_loc_date_{selected_hub_label}",
+                            )
+                        _loc_df = filter_scores(precomputed_wis, ref_dates=[loc_date])
+                        _loc_models = sorted(_loc_df["model"].astype(str).unique())
+                        _loc_ens = hub_ensemble_model(hub, loc_date)
+                        with lc1:
+                            loc_model = st.selectbox(
+                                "Model", options=_loc_models,
+                                index=(_loc_models.index(_loc_ens)
+                                       if _loc_ens in _loc_models else 0),
+                                key=f"wis_decomp_loc_model_{selected_hub_label}",
+                            )
+                        _loc_df = _loc_df[_loc_df["model"].astype(str) == loc_model]
+                        # One panel, so the horizon is picked rather than
+                        # faceted: 50-odd locations across four rows is a chart
+                        # several screens tall and no longer a single view.
+                        _h_vals = sorted(int(h) for h in _loc_df["horizon"].unique())
+                        _h_opts = ["All horizons (mean)"] + [
+                            f"{h} week{'s' if h != 1 else ''}" for h in _h_vals]
+                        with lc3:
+                            loc_h = st.selectbox(
+                                "Horizon", options=_h_opts, index=0,
+                                key=f"wis_decomp_loc_h_{selected_hub_label}",
+                            )
+                        if loc_h != _h_opts[0]:
+                            _loc_df = _loc_df[_loc_df["horizon"].astype(int)
+                                              == _h_vals[_h_opts.index(loc_h) - 1]]
+                        loc_share = st.checkbox(
+                            "Scale every location to its own total",
+                            value=True,
+                            key=f"wis_decomp_loc_share_{selected_hub_label}",
+                            help="WIS carries the units of the outcome, so raw "
+                                 "bars rank locations by size and the big "
+                                 "states swamp the rest. Scaling each to its "
+                                 "own total compares how the model misses "
+                                 "rather than how much.",
+                        )
+                        if _loc_df.empty:
+                            st.info(f"No scores for {loc_model} on {loc_date}.")
+                        else:
+                            st.plotly_chart(
+                                build_wis_decomposition(
+                                    _loc_df,
+                                    by_horizon=False,
+                                    group_col="location",
+                                    label_map=fips_to_name,
+                                    normalize=loc_share,
+                                    value_label=(
+                                        "Share of WIS" if loc_share
+                                        else ("Mean WIS" if loc_h == _h_opts[0]
+                                              else "WIS")),
+                                ),
+                                use_container_width=True,
+                                config={"displayModeBar": False},
+                            )
+                            st.caption(
+                                f"{_loc_df['location'].nunique()} locations · "
+                                f"{loc_model} · {loc_date} · {loc_h.lower()}"
+                            )
+                    else:
+                        dec_c1, dec_c2, dec_c3 = st.columns([1.2, 1.2, 2.6])
 
-                    # One model by default: every model at once is 50+ stacked
-                    # bars per panel, which is unreadable and buries the
-                    # comparison the chart exists to make.
-                    _dec_options = (sorted(_dec_df["model"].astype(str).unique())
-                                    if not _dec_df.empty else [])
-                    _dec_ens = hub_ensemble_model(
-                        hub, dec_date if not precomputed_wis.empty else None)
-                    _dec_default = ([_dec_ens] if _dec_ens in _dec_options
-                                    else _dec_options[:1])
-                    # Changing location or date changes which models have a
-                    # score, and a stale selection would otherwise raise.
-                    _dec_key = f"wis_decomp_models_{selected_hub_label}"
-                    if _dec_key in st.session_state:
-                        _kept = [m for m in st.session_state[_dec_key]
-                                 if m in _dec_options]
-                        st.session_state[_dec_key] = _kept or _dec_default
-                        # Passing `default` as well as a session-state value
-                        # makes Streamlit warn about the two disagreeing.
-                        _dec_kwargs = {}
-                    else:
-                        _dec_kwargs = {"default": _dec_default}
-                    _dec_epi = [m for m in wis_epistorm if m in _dec_options]
-                    with dec_c3:
-                        dec_models = st.multiselect(
-                            "Models to decompose",
-                            options=_dec_options,
-                            key=_dec_key,
-                            placeholder="Choose at least one model",
-                            **_dec_kwargs,
-                        )
-                        st.checkbox(
-                            "Select Epistorm models only" if _dec_epi
-                            else "Select Epistorm models only (none scored here)",
-                            value=False,
-                            key=f"{_dec_key}_epistorm",
-                            on_change=_apply_decomp_epistorm,
-                            args=(_dec_key, _dec_options, _dec_epi, _dec_default),
-                            disabled=not _dec_epi,
-                        )
-                    if _dec_df.empty:
-                        st.info(f"No scores for {_dec_label}.")
-                    elif dec_models:
-                        decomp_fig = build_wis_decomposition(
-                            _dec_df[_dec_df["model"].astype(str).isin(dec_models)],
-                            highlight_colors=wis_colors,
-                            by_horizon=wis_by_horizon,
-                            # One location and one date means one score per
-                            # model and horizon, so nothing is averaged until
-                            # the horizons are pooled.
-                            value_label="WIS" if wis_by_horizon else "Mean WIS",
-                        )
-                        st.plotly_chart(decomp_fig, use_container_width=True,
-                                        config={"displayModeBar": False})
-                    else:
-                        st.caption("Select a model to see its decomposition.")
+                        if precomputed_wis.empty:
+                            # Nothing to re-slice, so the chart follows the page
+                            # selectors instead of carrying its own.
+                            _dec_df = pd.DataFrame() if wis_all_locs else plot_wis
+                            _dec_label = _selection_label(
+                                eval_scope, eval_ref_dates, wis_all_locs, wis_loc_name)
+                        else:
+                            with dec_c1:
+                                _dec_loc_idx = (
+                                    loc_names.index(wis_loc_name)
+                                    if not wis_all_locs and wis_loc_name in loc_names
+                                    else (loc_names.index("US") if "US" in loc_names else 0)
+                                )
+                                dec_loc_name = st.selectbox(
+                                    "Location",
+                                    options=loc_names,
+                                    index=_dec_loc_idx,
+                                    key=f"wis_decomp_loc_{selected_hub_label}",
+                                )
+                            with dec_c2:
+                                _dec_dates = sorted(
+                                    pd.to_datetime(precomputed_wis["reference_date"])
+                                      .dt.strftime("%Y-%m-%d").unique(),
+                                    reverse=True,
+                                )
+                                if _min_date:
+                                    _dec_dates = [d for d in _dec_dates if d >= _min_date]
+                                _dec_date_idx = (
+                                    _dec_dates.index(eval_ref_dates[0])
+                                    if len(eval_ref_dates) == 1
+                                    and eval_ref_dates[0] in _dec_dates
+                                    else 0
+                                )
+                                dec_date = st.selectbox(
+                                    "Forecast date",
+                                    options=_dec_dates,
+                                    index=_dec_date_idx,
+                                    key=f"wis_decomp_date_{selected_hub_label}",
+                                )
+                            _dec_df = filter_scores(
+                                precomputed_wis,
+                                ref_dates=[dec_date],
+                                location=name_to_fips[dec_loc_name],
+                            )
+                            _dec_df = _dec_df[_dec_df["model"] != hub.baseline]
+                            _dec_label = f"{dec_date} · {dec_loc_name}"
+
+                        # One model by default: every model at once is 50+ stacked
+                        # bars per panel, which is unreadable and buries the
+                        # comparison the chart exists to make.
+                        _dec_options = (sorted(_dec_df["model"].astype(str).unique())
+                                        if not _dec_df.empty else [])
+                        _dec_ens = hub_ensemble_model(
+                            hub, dec_date if not precomputed_wis.empty else None)
+                        _dec_default = ([_dec_ens] if _dec_ens in _dec_options
+                                        else _dec_options[:1])
+                        # Changing location or date changes which models have a
+                        # score, and a stale selection would otherwise raise.
+                        _dec_key = f"wis_decomp_models_{selected_hub_label}"
+                        if _dec_key in st.session_state:
+                            _kept = [m for m in st.session_state[_dec_key]
+                                     if m in _dec_options]
+                            st.session_state[_dec_key] = _kept or _dec_default
+                            # Passing `default` as well as a session-state value
+                            # makes Streamlit warn about the two disagreeing.
+                            _dec_kwargs = {}
+                        else:
+                            _dec_kwargs = {"default": _dec_default}
+                        _dec_epi = [m for m in wis_epistorm if m in _dec_options]
+                        with dec_c3:
+                            dec_models = st.multiselect(
+                                "Models to decompose",
+                                options=_dec_options,
+                                key=_dec_key,
+                                placeholder="Choose at least one model",
+                                **_dec_kwargs,
+                            )
+                            st.checkbox(
+                                "Select Epistorm models only" if _dec_epi
+                                else "Select Epistorm models only (none scored here)",
+                                value=False,
+                                key=f"{_dec_key}_epistorm",
+                                on_change=_apply_decomp_epistorm,
+                                args=(_dec_key, _dec_options, _dec_epi, _dec_default),
+                                disabled=not _dec_epi,
+                            )
+                        if _dec_df.empty:
+                            st.info(f"No scores for {_dec_label}.")
+                        elif dec_models:
+                            decomp_fig = build_wis_decomposition(
+                                _dec_df[_dec_df["model"].astype(str).isin(dec_models)],
+                                highlight_colors=wis_colors,
+                                by_horizon=wis_by_horizon,
+                                # One location and one date means one score per
+                                # model and horizon, so nothing is averaged until
+                                # the horizons are pooled.
+                                value_label="WIS" if wis_by_horizon else "Mean WIS",
+                            )
+                            st.plotly_chart(decomp_fig, use_container_width=True,
+                                            config={"displayModeBar": False})
+                        else:
+                            st.caption("Select a model to see its decomposition.")
 
                 wis_table = summarize_wis(plot_wis)
                 if not wis_table.empty:

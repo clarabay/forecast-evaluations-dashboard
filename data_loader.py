@@ -477,8 +477,16 @@ def _socrata_app_token() -> Optional[str]:
         return None
 
 
+# Bumped when a parsing fix changes what a vintage pull returns, so the stale
+# parquets already on disk — and on the deployed instance, where nobody can
+# reach in and delete them — are bypassed instead of silently served. v2: rows
+# issued on the snapshot date itself were being dropped.
+_ASOF_CACHE_VERSION = "v2"
+
+
 def _versioned_cache_path(hub: HubConfig, snapshot_date: str, geo_type: str) -> Path:
-    return DISK_CACHE_DIR / hub.cache_dir / "asof" / f"{snapshot_date}_{geo_type}.parquet"
+    return (DISK_CACHE_DIR / hub.cache_dir / "asof"
+            / f"{snapshot_date}_{geo_type}_{_ASOF_CACHE_VERSION}.parquet")
 
 
 @st.cache_data(ttl=None, show_spinner=False)
@@ -571,8 +579,15 @@ def _load_versioned_truth_cached(hub_label: str, reference_date: str,
     # Guard against a silent fallback to current data. If the API ever answers a
     # vintage request with newer rows, plotting them would put the "as of" line
     # exactly on top of the observed line — a wrong chart that looks right.
+    #
+    # Compared by date, not by instant: Delphi stamps every report_time at
+    # 12:00, so a plain `<= pd.Timestamp(snapshot_date)` (midnight) threw away
+    # everything issued *on* the day we asked for. That is the release the
+    # vintage is built around, and dropping it cut the national series back by
+    # five weeks — the as-of line stopped before the part of the chart anyone
+    # looks at, which read as "the data never gets revised".
     asked = pd.Timestamp(snapshot_date)
-    raw = raw[raw["report_time"] <= asked]
+    raw = raw[raw["report_time"].dt.normalize() <= asked]
     if raw.empty:
         raise _DelphiUnavailable(
             f"no vintage published on or before {snapshot_date}")

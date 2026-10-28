@@ -102,8 +102,12 @@ def _wis_terms(wide: pd.DataFrame, obs: np.ndarray, transform=None):
         hi = f(wide[q_hi].values.astype(float))
         valid = ~(np.isnan(lo) | np.isnan(hi))
         disp  += np.where(valid, (hi - lo) * (alpha / 2.0), 0.0)
-        under += np.where(valid, np.maximum(lo - o, 0), 0.0)
-        over  += np.where(valid, np.maximum(o - hi, 0), 0.0)
+        # Which side a shortfall belongs to is named for what the FORECAST did,
+        # not for where the observation sits. An observation above the upper
+        # bound means the forecast aimed too low -> underprediction; one below
+        # the lower bound means it aimed too high -> overprediction.
+        under += np.where(valid, np.maximum(o - hi, 0), 0.0)
+        over  += np.where(valid, np.maximum(lo - o, 0), 0.0)
 
     if 0.5 in wide.columns:
         median = f(wide[0.5].values.astype(float))
