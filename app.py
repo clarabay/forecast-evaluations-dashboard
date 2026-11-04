@@ -1154,12 +1154,9 @@ offsets. Vintages start 2024-11-19.
                 if _wis_single_date else False
             )
             wis_min_cov = st.checkbox(
-                "Exclude models with fewer than 25% of the ensemble's forecasts",
+                "Exclude models with fewer than 25% of the total number of forecasts",
                 value=True,
                 key=f"wis_min_cov_{selected_hub_label}",
-                help="Ranking is by median WIS ratio, which says nothing about "
-                     "how much a model forecast, so one lucky week can outrank "
-                     "a model that submitted all season.",
             )
 
         # Written through a placeholder so the findings sentence can be appended
