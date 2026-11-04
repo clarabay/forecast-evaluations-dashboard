@@ -1093,7 +1093,10 @@ offsets. Vintages start 2024-11-19.
     with tab_wis:
         # Selectors compressed into the left-hand columns, with the explanatory
         # text taking the freed space on the right so it sits above the boxplots.
-        wis_c1, wis_c2, wis_c3, wis_note = st.columns([1.3, 1.5, 1.3, 2.9])
+        # wis_c3 is wider than the other control columns: it carries the
+        # coverage checkbox, whose label states the rule and wrapped to
+        # five lines at the old width.
+        wis_c1, wis_c2, wis_c3, wis_note = st.columns([1.4, 1.3, 2.2, 2.1])
 
         with wis_c1:
             wis_loc_options = ["All locations"] + loc_names
@@ -1149,6 +1152,14 @@ offsets. Vintages start 2024-11-19.
                          "value; outliers will widen the x-axis.",
                 )
                 if _wis_single_date else False
+            )
+            wis_min_cov = st.checkbox(
+                "Exclude models with fewer than 25% of the ensemble's forecasts",
+                value=True,
+                key=f"wis_min_cov_{selected_hub_label}",
+                help="Ranking is by median WIS ratio, which says nothing about "
+                     "how much a model forecast, so one lucky week can outrank "
+                     "a model that submitted all season.",
             )
 
         # Written through a placeholder so the findings sentence can be appended
@@ -1253,10 +1264,29 @@ offsets. Vintages start 2024-11-19.
                     (wis_results["model"].isin(wis_models_shown))
                 ].copy()
 
-                st.caption(
-                    f"{plot_wis['model'].nunique()} models · "
-                    f"{'all locations' if wis_all_locs else wis_loc_name}"
+                # Coverage guard. Ranking is by median WIS ratio, which says
+                # nothing about how much was forecast, so a model with a single
+                # scored task lands near the top on one lucky week. The ensemble
+                # is the yardstick because it submits on every task; counted as
+                # distinct tasks across its renamed variants, so a hub that
+                # renamed its ensemble mid-season still gets one full total.
+                _TASK = ["location", "horizon", "reference_date", "target_end_date"]
+                _ens_n = len(
+                    wis_results[wis_results["model"].astype(str)
+                                .isin([m for m in hub_ensemble_models(hub) if m])]
+                    .drop_duplicates(subset=_TASK)
                 )
+                _counts = plot_wis.groupby("model", observed=True).size()
+                _floor = int(_ens_n * 0.25)
+                _thin = sorted(str(m) for m, n in _counts.items() if n < _floor)
+                if wis_min_cov and _ens_n and _thin:
+                    plot_wis = plot_wis[~plot_wis["model"].astype(str).isin(_thin)]
+
+                _cap = (f"{plot_wis['model'].nunique()} models · "
+                        f"{'all locations' if wis_all_locs else wis_loc_name}")
+                if wis_min_cov and _ens_n and _thin:
+                    _cap += f" · {len(_thin)} excluded"
+                st.caption(_cap)
                 st.markdown("##### Forecast WIS ratio")
                 wis_fig = build_wis_boxplots(
                     plot_wis,
@@ -1361,6 +1391,15 @@ offsets. Vintages start 2024-11-19.
                         if _loc_df.empty:
                             st.info(f"No scores for {loc_model} on {loc_date}.")
                         else:
+                            # Above the chart, not below it. Trailing the chart
+                            # put this line flush against the next section's
+                            # heading, where it read as a subtitle for the WIS
+                            # Overview Table and appeared to date-stamp a table
+                            # that actually spans the whole selected season.
+                            st.caption(
+                                f"{_loc_df['location'].nunique()} locations · "
+                                f"{loc_model} · {loc_date} · {loc_h.lower()}"
+                            )
                             st.plotly_chart(
                                 build_wis_decomposition(
                                     _loc_df,
@@ -1375,10 +1414,6 @@ offsets. Vintages start 2024-11-19.
                                 ),
                                 use_container_width=True,
                                 config={"displayModeBar": False},
-                            )
-                            st.caption(
-                                f"{_loc_df['location'].nunique()} locations · "
-                                f"{loc_model} · {loc_date} · {loc_h.lower()}"
                             )
                     else:
                         dec_c1, dec_c2, dec_c3 = st.columns([1.2, 1.2, 2.6])
