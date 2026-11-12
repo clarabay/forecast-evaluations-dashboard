@@ -392,6 +392,19 @@ def _apply_decomp_epistorm(key: str, options: list[str], epistorm: list[str],
                              else list(fallback))
 
 
+def _mirror_to_top(echo_key: str, target_key: str) -> None:
+    """
+    Copy a duplicated picker's value onto the real control at the top of the tab.
+
+    The WIS table sits several screens below the scope and date pickers, so the
+    same two controls are repeated beside it. Streamlit will not take two
+    widgets on one key, so the copy carries its own and hands the value back
+    here; callbacks run before the rerun, which is why the control at the top
+    picks it up on the next pass rather than a pass later.
+    """
+    st.session_state[target_key] = st.session_state[echo_key]
+
+
 # ── Findings sentences for the note boxes ──────────────────────────────────────
 
 def _note_box(description: str, findings: str = "") -> str:
@@ -1096,6 +1109,15 @@ offsets. Vintages start 2024-11-19.
         # wis_c3 is wider than the other control columns: it carries the
         # coverage checkbox, whose label states the rule and wrapped to
         # five lines at the old width.
+        # Hoisted: the duplicate pickers beside the table further down need the
+        # same options. get_all_available_dates is cached, but the branch below
+        # only reached it when single-date scope happened to be selected.
+        scope_options = ["Selected forecast date"] + season_options
+        _wis_dates = get_all_available_dates(selected_hub_label, all_models)
+        if _min_date:
+            _wis_dates = [d for d in _wis_dates if d >= _min_date]
+        wis_single_date = None
+
         wis_c1, wis_c2, wis_c3, wis_note = st.columns([1.4, 1.3, 2.2, 2.1])
 
         with wis_c1:
@@ -1110,24 +1132,27 @@ offsets. Vintages start 2024-11-19.
             wis_location = None if wis_all_locs else name_to_fips[wis_loc_name]
 
         with wis_c2:
-            scope_options = ["Selected forecast date"] + season_options
-            default_idx = 1 if len(scope_options) > 1 else 0
+            # index is passed only on the first run. The duplicate pickers by
+            # the table write these same keys from their callback, and passing
+            # a default as well makes Streamlit warn that the two disagree.
+            _scope_key = f"wis_eval_scope_{selected_hub_label}"
+            _date_key  = f"wis_single_date_{selected_hub_label}"
+            _scope_kw = ({} if _scope_key in st.session_state
+                         else {"index": 1 if len(scope_options) > 1 else 0})
             eval_scope = st.radio(
                 "Evaluation scope",
                 options=scope_options,
-                index=default_idx,
-                key=f"wis_eval_scope_{selected_hub_label}",
+                key=_scope_key,
+                **_scope_kw,
             )
             if eval_scope == "Selected forecast date":
-                _wis_dates = get_all_available_dates(selected_hub_label, all_models)
-                if _min_date:
-                    _wis_dates = [d for d in _wis_dates if d >= _min_date]
                 if _wis_dates:
+                    _date_kw = {} if _date_key in st.session_state else {"index": 0}
                     wis_single_date = st.selectbox(
                         "Forecast date",
                         options=list(reversed(_wis_dates)),
-                        index=0,
-                        key=f"wis_single_date_{selected_hub_label}",
+                        key=_date_key,
+                        **_date_kw,
                     )
                     eval_ref_dates = [wis_single_date]
                 else:
@@ -1527,6 +1552,37 @@ offsets. Vintages start 2024-11-19.
                     wis_note_slot.markdown(_note_box(wis_note_intro, _findings),
                                            unsafe_allow_html=True)
                     st.markdown("##### WIS Overview Table")
+                    # The real pickers are several screens up. These carry their
+                    # own keys and hand the value back through _mirror_to_top,
+                    # and sit *below* the heading so it is unambiguous that they
+                    # belong to the table rather than to the chart above it.
+                    _echo_scope = f"wis_scope_echo_{selected_hub_label}"
+                    _echo_date  = f"wis_date_echo_{selected_hub_label}"
+                    # Written before the widget exists this run, not passed as
+                    # index: that is what keeps the copy in step with the top
+                    # control without Streamlit warning that a default and a
+                    # session value disagree.
+                    st.session_state[_echo_scope] = eval_scope
+                    _e1, _e2, _ = st.columns([1.4, 1.4, 2.2])
+                    with _e1:
+                        st.selectbox(
+                            "Evaluation scope",
+                            options=scope_options,
+                            key=_echo_scope,
+                            on_change=_mirror_to_top,
+                            args=(_echo_scope, f"wis_eval_scope_{selected_hub_label}"),
+                        )
+                    if eval_scope == "Selected forecast date" and wis_single_date:
+                        st.session_state[_echo_date] = wis_single_date
+                        with _e2:
+                            st.selectbox(
+                                "Forecast date",
+                                options=list(reversed(_wis_dates)),
+                                key=_echo_date,
+                                on_change=_mirror_to_top,
+                                args=(_echo_date,
+                                      f"wis_single_date_{selected_hub_label}"),
+                            )
                     # Same models the boxplot picks out, styled to match. Number
                     # formatting moves into the Styler because column_config
                     # formats are not applied to a styled frame.

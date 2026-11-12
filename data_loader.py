@@ -150,6 +150,7 @@ _EPISTORM_FLU = [
     # against the live model list, so an absent name is simply ignored.
     "NU-FLARE",
     "MOBS-GLEAM_NCB_FLUH",
+    "MOBS-GLEAM_PONG",
     "MIGHTE-Base",
     "Xi_lab-GLEAM_AI",
     "Xi_lab-GLEAM_AI_hybrid",
@@ -191,6 +192,7 @@ HUB_CONFIGS: dict[str, HubConfig] = {
             "NU-EMBERS",
             "NU-FLARE",
             "MOBS-GLEAM_NCB_FLUH",
+            "MOBS-GLEAM_PONG",
             "MIGHTE-Base",
             "Xi_lab-GLEAM_AI",
             "Xi_lab-GLEAM_AI_hybrid",
